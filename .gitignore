@@ -1,0 +1,5 @@
+.build/
+dist/
+backend/target/
+.candy-engine-*
+.DS_Store

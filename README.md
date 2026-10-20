@@ -1,0 +1,55 @@
+# CPS Codex 能力测试 v0.1.0
+
+面向 Codex Proxy RS（CPS）的独立进程插件，参考 [haowang02/cpa-plugin-codex-candy-eval](https://github.com/haowang02/cpa-plugin-codex-candy-eval) 实现。无需 CPA、额外管理密码、Python 或在线指纹服务。
+
+## 安装与使用
+
+要求 CPS **3.29.3 或以上的 3.x 版本**，进程协议 v4、management v2。SDK 固定于 `16d8a3f87309d9346a5f204673390fe20478b40e`，该兼容范围已通过 SDK 测试，尚未在运行中的 CPS 安装验收。
+
+1. 打开 CPS → 插件管理 → 安装 → 上传包，选 `dist/local.codex-candy-eval-0.1.0-x86_64-unknown-linux-gnu.tar.gz`（Linux x86_64）。Apple Silicon 本机 CPS 使用对应的 `aarch64-apple-darwin` 包。
+2. 确认来源和完整信任，接受制品并启用；无额外插件配置项。
+3. 从插件菜单打开「Codex 能力测试」，选 Client Key、模型和账号，点击测试。
+
+所选 Key 必须有权访问目标账号和模型，并有可用预算。账号指定通过 `host.model.execute_stream` 完成；宿主负责凭据、代理、账号约束、计费和请求日志。插件只获取展示事实，不读取原始账号令牌或 Key 密钥，不改账号、分组、优先级或 Key。
+
+## 已实现
+
+- **糖果题**：与参考项目同题，每账号 1–10 次，选择推理强度。沿用“回答包含独立数字 21”启发式评分，答错不重试；原文供人工核对，文本提到 21 不代表其最终结论正确。
+- **模型指纹**：从同一参考库的 36 道挑战随机抽取 3 道，使用模型默认推理强度，保留系统提示和题目前缀。复用固定的 Go 检测算法、校准、候选库及黄金样本；部分样本只排名，不显示概率，非模型样式的数字序列不归因。概率仅比较内置候选，不能证明真实模型身份。
+- **画鹈鹕**：原版与多合一版，保存模型原文。提取 SVG 作为独立图片显示，支持 SVG/CSS 动画，不执行 JavaScript、不加载外部资源。依赖 HTML 脚本的动画无法播放。
+- **单账号与批量**：勾选多个账号串行测试；可在本题结束后暂停，历史中的待继续轮次可续测。
+- **持久历史**：宿主私有状态保留全局最近 64 轮；空间满时只覆盖最早的已结束轮次。展示题目回答、推理强度、耗时、Token、请求 ID 和评分。
+- **重复计费保护**：先保存请求中状态，再调用模型。浏览器断开或进程重启后，未确认结果的题目不会自动重发；在 CPS 请求日志核对后停止该轮，再新建测试。
+
+每题都构造新的 Codex 会话，复用参考项目固定的 Codex CLI 0.163.0 上下文；约 1.4 万输入 Token 仅是参考估计，实际以 CPS 用量为准。通过 CPS 已支持的 `client_metadata.ws_request_header_x_openai_internal_codex_responses_lite` 投影传递 Responses Lite 标识；无需修改宿主。插件不会执行模型发出的工具调用。
+
+## 首版边界
+
+- 每个插件实例同时执行一题。页面顺序推进批量队列；关闭页面会终止页面队列，已保存的待继续轮次可恢复，尚未创建的后续账号需要重新勾选。
+- 模型流读取最多 **120 秒**，为 CPS 管理桥 180 秒期限留出建连及保存时间；与 CPA 参考项目的 3/10 分钟上限不同。无自动重试、定时巡检、通知或自动优先级调整。
+- 每轮受 CPS **256 KiB** 单条状态上限约束。超大回答不参与评分；若汇总状态超限，保留请求事实并移除回答原文，页面显示原因。
+- 本地协议测试模拟 CPS 和模型返回，浏览器测试使用明确的演示账号。尚未在真实 CPS 安装、调用真实模型或验证生产计费；Linux ELF 已构建，但本机没有 Linux 运行环境，未进行 Linux 进程实跑。
+
+## 构建与验证
+
+要求 Go 1.26+、Rust 1.99.1、目标 Rust std，以及与上述 SDK 一致的 CPS `cpr-plugin` 打包工具。代码只通过固定 Git SDK 依赖宿主，无本地源码路径依赖。
+
+```sh
+# 本机测试并生成 macOS ARM64 包
+CPR_PLUGIN_BIN=/path/to/cpr-plugin bash scripts/build.sh aarch64-apple-darwin
+
+# Linux x86_64 静态 ELF 包（macOS 可用 rust-lld 交叉链接）
+rustup target add x86_64-unknown-linux-musl --toolchain 1.99.1
+CPR_PLUGIN_BIN=/path/to/cpr-plugin bash scripts/build.sh x86_64-unknown-linux-gnu
+
+# 页面交互、严格 CPS CSP、窄屏与明暗主题
+PLAYWRIGHT_PATH=/path/to/playwright CHROME_BINARY=/path/to/chrome node scripts/browser-qa.mjs
+```
+
+CPS 包名中的 `linux-gnu` 来自官方打包工具的 Linux 平台命名；实际二进制是面向 Linux x86_64 的静态 musl ELF，不依赖服务端 glibc。离线 Go 引擎嵌入 Rust 可执行文件，启动时在宿主提供的私有可执行工作目录释放，正常退出时删除。
+
+`engine/` 负责题目、Codex 请求构造和离线评分；`backend/` 负责 CPS 协议和状态；`web/` 为无依赖页面；`scripts/` 提供构建、归档校验和浏览器测试。安装包内无凭据、管理地址或演示数据。
+
+## 来源与许可
+
+参考项目固定提交 `4f8367642cc1e629c4ee15a975e5e0fc53c4ac16`（MIT）。指纹算法与库来自 `Ikaleio/lm-detector` 的 `654c8334bb53951aaf04cbd61252d163649e1369`（MIT）。来源声明及许可证在 `legal/` 和 `engine/data/lm-detector/README.md`，均随包分发。CPS SDK 为 Apache-2.0；第三方依赖许可汇总见 `legal/THIRD-PARTY-LICENSES.txt`。
