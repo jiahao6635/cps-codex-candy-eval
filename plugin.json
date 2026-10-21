@@ -3,7 +3,7 @@
   "name": "codex-candy-eval",
   "publisher": "local",
   "displayName": "Codex 能力测试",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "糖果题、模型行为指纹和鹈鹕绘图；指定 CPS 账号测试并保存历史",
   "license": "MIT",
   "engines": {

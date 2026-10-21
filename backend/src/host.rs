@@ -48,8 +48,8 @@ pub async fn list(host: &HostClient, accounts: bool) -> Result<Vec<Value>, Plugi
             .as_array()
             .ok_or_else(|| fault("宿主列表格式错误"))?;
         // Only return display facts; never expose credential material to the iframe.
-        for a in items.iter().filter(|a| a["enabled"] == true) {
-            values.push(if accounts {json!({"id":a["account_id"],"name":a["name"],"email":a["email"],"plan":a["plan_type"]})} else {json!({"id":a["id"],"name":a["name"]})});
+        for a in items.iter().filter(|a| accounts || a["enabled"] == true) {
+            values.push(if accounts {json!({"id":a["account_id"],"name":a["name"],"email":a["email"],"plan":a["plan_type"],"enabled":a["enabled"]})} else {json!({"id":a["id"],"name":a["name"]})});
         }
         cursor = page["next_cursor"].clone();
         if cursor.is_null() {

@@ -1,5 +1,5 @@
 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex 能力测试</title><link rel="stylesheet" href="app.css"></head><body>
-<main><header><div><p class="eyebrow">CPS / CODEX EVAL</p><h1>Codex 能力测试</h1><p>用一道题、一组指纹和一幅画，观察账号的实际表现。</p></div><span class="badge">v0.1.1</span></header>
+<main><header><div><p class="eyebrow">CPS / CODEX EVAL</p><h1>Codex 能力测试</h1><p>用一道题、一组指纹和一幅画，观察账号的实际表现。</p></div><span class="badge">v0.1.2</span></header>
 <div class="notice">测试消耗所选 Key 与账号额度。每题使用新的 Codex 上下文；结果用于比较行为，无法证明模型身份或账号降智。</div>
 <div class="layout"><section class="panel"><h2>配置测试</h2><form id="config">
 <label>测试类型<select id="kind"><option value="candy">糖果题 · 答案检查</option><option value="fingerprint">模型指纹 · 3 道挑战</option><option value="pelican">画鹈鹕 · 视觉比较</option></select></label>
@@ -8,8 +8,13 @@
 <label id="effort-label">推理强度<select id="effort"><option value="none">默认</option><option value="minimal">minimal</option><option value="low" selected>low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></label>
 <label id="runs-label">每账号次数<input id="runs" type="number" min="1" max="10" value="1" required></label>
 <label id="variant-label" hidden>绘图版本<select id="variant"><option value="original">原版 · 鹈鹕骑车</option><option value="all-in-one">多合一 · 复杂场景</option></select></label>
-<p id="hint" class="muted">糖果题按回答中是否出现独立数字 21 评分；展开原文核对结论。</p>
+<p id="hint" class="muted">糖果题按回答中是否出现独立数字 21 评分，展开原文核对结论</p>
 <button id="start" type="submit">测试选中的账号</button><button id="pause" type="button" class="secondary" disabled>本题完成后暂停</button>
-</form></section><div><section class="panel"><div class="section-head"><h2>选择账号 <span id="count" class="muted"></span></h2><button id="refresh" class="secondary" type="button">刷新</button></div><label class="check"><input type="checkbox" id="all"> 全选可用账号</label><div id="accounts" class="accounts"></div><p id="progress" role="status" aria-live="polite">正在加载…</p><p id="error" role="alert"></p></section>
-<section class="panel"><div class="section-head"><h2>测试历史</h2><span class="muted">保留最近 64 轮</span></div><div id="history"></div></section></div></div>
-</main><dialog id="preview"><div class="section-head"><h2>绘图预览</h2><button id="close-preview" class="secondary">关闭</button></div><p class="muted">以独立 SVG 图片预览，支持 SVG/CSS 动画；HTML 脚本不执行。</p><img id="drawing" alt="模型生成的鹈鹕绘图"></dialog><script defer src="app.js"></script></body></html>
+</form></section><section class="panel account-panel">
+<div class="section-head"><h2>账号与测试结果 <span id="count" class="muted"></span></h2><button id="refresh" class="secondary" type="button">刷新</button></div>
+<div class="filters"><label>查找账号<input id="account-search" type="search" placeholder="名称、邮箱或账号 ID"></label><label>历史范围<select id="history-scope"><option value="current">当前测试类型</option><option value="all">全部测试</option></select></label></div>
+<div class="selection-bar"><label class="check"><input type="checkbox" id="all"> 全选当前可用账号</label><span id="selected-count" class="muted">已选 0 个</span></div>
+<p id="progress" role="status" aria-live="polite">正在加载…</p><p id="error" role="alert"></p>
+<div id="accounts" class="accounts"></div><p id="history-count" class="meta"></p>
+</section></div></main>
+<dialog id="preview" aria-labelledby="preview-title" aria-describedby="preview-meta"><div class="section-head"><h2 id="preview-title">鹈鹕画面</h2><button id="close-preview" class="secondary" autofocus>关闭</button></div><p id="preview-meta" class="meta"></p><p class="muted">支持 SVG / CSS 动画，依赖 HTML 脚本的动画无法播放</p><p id="preview-error" class="error-text" role="alert"></p><img id="drawing" alt="模型生成的鹈鹕绘图"></dialog><script defer src="app.js"></script></body></html>

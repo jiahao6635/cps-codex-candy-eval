@@ -26,6 +26,7 @@ struct Harness {
     io: Box<dyn Transport>,
     task: tokio::task::JoinHandle<()>,
     records: BTreeMap<String, (Value, u64)>,
+    accounts: Vec<Value>,
     requests: Vec<(Value, Value)>,
     fail: bool,
     sequence: u64,
@@ -99,6 +100,7 @@ impl Harness {
             io,
             task,
             records: BTreeMap::new(),
+            accounts: vec![account()],
             requests: vec![],
             fail: false,
             wire_mode,
@@ -145,7 +147,7 @@ impl Harness {
         match method {
             "host.auth.list" => (
                 json!({}),
-                serde_json::to_vec(&json!({"accounts":[account()],"next_cursor":null})).unwrap(),
+                serde_json::to_vec(&json!({"accounts":self.accounts,"next_cursor":null})).unwrap(),
             ),
             "host.auth.get_runtime" => {
                 let q: Value = serde_json::from_slice(&body).unwrap();
@@ -284,4 +286,77 @@ async fn invalid_websocket_is_request_failure_not_wrong_answer() {
     assert_eq!(body["run"]["report"]["valid"], 0);
     assert_eq!(body["run"]["attempts"][0]["status"], "failed");
     assert_eq!(h.requests.len(), 1);
+}
+
+#[tokio::test]
+async fn account_facts_and_legacy_history_are_readable_without_bulk_answers() {
+    let mut h = Harness::new(WireMode::Json).await;
+    h.accounts[0]["name"] = json!("openai OAuth");
+    h.accounts[0]["email"] = json!("us-east@example.invalid");
+    h.accounts[0]["material"] = json!({"access_token":"must-not-be-returned"});
+    let mut disabled = account();
+    disabled["account_id"] = json!("disabled");
+    disabled["enabled"] = json!(false);
+    h.accounts.push(disabled);
+    let (status, body) = h.api("api/bootstrap", None).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["accounts"].as_array().unwrap().len(), 2);
+    assert_eq!(body["accounts"][0]["email"], "us-east@example.invalid");
+    assert_eq!(body["accounts"][1]["enabled"], false);
+    assert!(!body.to_string().contains("must-not-be-returned"));
+    let mut request = start();
+    request["account_id"] = json!("disabled");
+    assert_eq!(h.api("api/start", Some(request)).await.0, 400);
+    assert!(h.requests.is_empty());
+
+    // 旧 schema v1 的全量历史包含正文但没有邮箱快照，读取不能修改保存内容
+    for slot in 0..64 {
+        let run = json!({"id":format!("legacy-{slot}"),"slot":slot,"created_at":slot,"account_id":if slot%2==0 {"a"}else{"removed"},"account_name":"openai OAuth","kind":"pelican","status":"completed","jobs":[{"prompt":"private-job"}],"identity":["private-identity"],"credential_revision":1,"attempts":[{"answer":"A".repeat(100_000),"status":"completed"}],"report":{"html":"<svg>drawing</svg>"}});
+        h.records.insert(slot.to_string(), (run, 7));
+    }
+    let original = h.records.clone();
+    let (status, history) = h.api("api/history", None).await;
+    assert_eq!(status, 200);
+    let rows = history["runs"].as_array().unwrap();
+    assert_eq!(rows.len(), 64);
+    assert_eq!(rows[0]["id"], "legacy-63");
+    assert_eq!(rows[0]["account_id"], "removed");
+    assert_eq!(rows[0]["has_drawing"], true);
+    assert!(rows[0]["jobs"].is_null());
+    assert!(rows[0]["attempts"][0]["answer"].is_null());
+    assert!(rows[0]["report"]["html"].is_null());
+    assert!(serde_json::to_vec(&history).unwrap().len() < 64 * 1024);
+    let (status, detail) = h
+        .api("api/run", Some(json!({"id":"legacy-63","slot":63})))
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        detail["run"]["attempts"][0]["answer"]
+            .as_str()
+            .unwrap()
+            .len(),
+        100_000
+    );
+    assert_eq!(detail["run"]["report"]["html"], "<svg>drawing</svg>");
+    assert!(detail["run"]["identity"].is_null());
+    assert_eq!(h.records, original);
+    assert_eq!(
+        h.api("api/run", Some(json!({"id":"overwritten","slot":63})))
+            .await
+            .0,
+        400
+    );
+    assert_eq!(
+        h.api("api/run", Some(json!({"id":"legacy-63","slot":64})))
+            .await
+            .0,
+        400
+    );
+    assert!(h.requests.is_empty());
+
+    let (status, body) = h.api("api/start", Some(start())).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["run"]["account_email"], "us-east@example.invalid");
+    assert_eq!(body["run"]["account_plan"], "pro");
+    assert_eq!(h.records.get("1"), original.get("1"));
 }

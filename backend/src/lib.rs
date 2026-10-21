@@ -38,6 +38,7 @@ fn build(service: Arc<Service>) -> Result<ComposedPlugin, AuthorError> {
             ("GET", "api/bootstrap"),
             ("POST", "api/models"),
             ("GET", "api/history"),
+            ("POST", "api/run"),
             ("POST", "api/start"),
             ("POST", "api/step"),
             ("POST", "api/stop"),
@@ -133,6 +134,29 @@ async fn histories(
     rows.sort_by_key(|(_, r, _)| std::cmp::Reverse(r["created_at"].as_u64().unwrap_or(0)));
     Ok(rows)
 }
+fn history_summary(mut run: Value) -> Value {
+    // 列表不携带题目、身份校验字段和回答正文，绘图及原文按轮次读取
+    let fields = run.as_object_mut().unwrap();
+    for key in ["jobs", "identity", "credential_revision"] {
+        fields.remove(key);
+    }
+    if let Some(attempts) = run["attempts"].as_array_mut() {
+        for attempt in attempts {
+            if let Some(fields) = attempt.as_object_mut() {
+                fields.remove("answer");
+            }
+        }
+    }
+    run["has_drawing"] = json!(
+        run["report"]["html"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    );
+    if let Some(report) = run["report"].as_object_mut() {
+        report.remove("html");
+    }
+    run
+}
 async fn dispatch(s: &Service, c: &TypedCall<ManagementRequest>) -> Result<Value, PluginFault> {
     if !c.request.query.is_empty() || c.payload.len() > 8192 {
         return Err(fault("请求超限或包含未支持的查询参数"));
@@ -143,8 +167,25 @@ async fn dispatch(s: &Service, c: &TypedCall<ManagementRequest>) -> Result<Value
             Ok(json!({"accounts":host::list(h,true).await?,"keys":host::list(h,false).await?}))
         }
         ("POST", "api/models") => host::models(h, &input::<Key>(c)?.key_id).await,
-        ("GET", "api/history") => {
-            Ok(json!({"runs":histories(h).await?.into_iter().map(|(_,r,_)|r).collect::<Vec<_>>()}))
+        ("GET", "api/history") => Ok(
+            json!({"runs":histories(h).await?.into_iter().map(|(_,r,_)|history_summary(r)).collect::<Vec<_>>(),"limit":SLOTS}),
+        ),
+        ("POST", "api/run") => {
+            let q: Identity = input(c)?;
+            if q.slot >= SLOTS {
+                return Err(fault("历史槽位无效"));
+            }
+            let (mut run, _) = host::read(h, q.slot)
+                .await?
+                .ok_or_else(|| fault("历史记录不存在"))?;
+            if run["id"] != q.id {
+                return Err(fault("此历史记录已被覆盖，请刷新列表"));
+            }
+            let fields = run.as_object_mut().unwrap();
+            for key in ["identity", "credential_revision"] {
+                fields.remove(key);
+            }
+            Ok(json!({"run":run}))
         }
         ("POST", "api/start") => {
             let q: Start = input(c)?;
@@ -152,7 +193,7 @@ async fn dispatch(s: &Service, c: &TypedCall<ManagementRequest>) -> Result<Value
             let account = host::list(h, true)
                 .await?
                 .into_iter()
-                .find(|v| v["id"] == q.account_id)
+                .find(|v| v["id"] == q.account_id && v["enabled"] == true)
                 .ok_or_else(|| fault("请选择已启用的 OpenAI 账号"))?;
             if !host::list(h, false)
                 .await?
@@ -202,7 +243,7 @@ async fn dispatch(s: &Service, c: &TypedCall<ManagementRequest>) -> Result<Value
                 .iter()
                 .find(|(i, _, _)| *i == slot)
                 .map(|(_, _, v)| *v);
-            let r = json!({"id":format!("{}-{}",now(),slot),"slot":slot,"created_at":now(),"account_id":q.account_id,"account_name":account["name"],"key_id":q.key_id,"model":q.model,"kind":q.kind,"effort":q.effort,"variant":q.variant,"jobs":jobs,"attempts":[],"status":"ready","report":null,"identity":[a["authentication_kind"],a["upstream_user_id"],a["upstream_account_id"]],"credential_revision":a["credential_revision"]});
+            let r = json!({"id":format!("{}-{}",now(),slot),"slot":slot,"created_at":now(),"account_id":q.account_id,"account_name":account["name"],"account_email":account["email"],"account_plan":account["plan"],"key_id":q.key_id,"model":q.model,"kind":q.kind,"effort":q.effort,"variant":q.variant,"jobs":jobs,"attempts":[],"status":"ready","report":null,"identity":[a["authentication_kind"],a["upstream_user_id"],a["upstream_account_id"]],"credential_revision":a["credential_revision"]});
             host::write(h, slot, &r, version).await?;
             Ok(json!({"run":r}))
         }
