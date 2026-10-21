@@ -16,7 +16,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "cps-codex-candy-eval"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "gateway-plugin-sdk",
  "serde",
@@ -37,7 +37,7 @@ dependencies = [
 [[package]]
 name = "gateway-plugin-sdk"
 version = "0.1.0"
-source = "git+https://github.com/zyycn/codex-proxy-rs.git?rev=16d8a3f87309d9346a5f204673390fe20478b40e#16d8a3f87309d9346a5f204673390fe20478b40e"
+source = "git+https://github.com/zyycn/codex-proxy-rs.git?rev=78bc57c5cf24b01a38e985cdd739bb4ae89ce11f#78bc57c5cf24b01a38e985cdd739bb4ae89ce11f"
 dependencies = [
  "base64",
  "semver",

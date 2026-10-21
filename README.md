@@ -1,12 +1,14 @@
-# CPS Codex 能力测试 v0.1.0
+# CPS Codex 能力测试 v0.1.1
 
 面向 Codex Proxy RS（CPS）的独立进程插件，参考 [haowang02/cpa-plugin-codex-candy-eval](https://github.com/haowang02/cpa-plugin-codex-candy-eval) 实现。无需 CPA、额外管理密码、Python 或在线指纹服务。
 
 ## 安装与使用
 
-要求 CPS **3.29.3 或以上的 3.x 版本**，进程协议 v4、management v2。SDK 固定于 `16d8a3f87309d9346a5f204673390fe20478b40e`，该兼容范围已通过 SDK 测试，尚未在运行中的 CPS 安装验收。
+要求 CPS **3.29.7 或以上的 3.x 版本**，进程协议 v5、management v2。SDK 固定于 CPS v3.29.7 的提交 `78bc57c5cf24b01a38e985cdd739bb4ae89ce11f`；当前验证目标为 v3.29.7，尚未在运行中的 CPS 安装验收。
 
-1. 打开 CPS → 插件管理 → 安装 → 上传包，选 `dist/local.codex-candy-eval-0.1.0-x86_64-unknown-linux-gnu.tar.gz`（Linux x86_64）。Apple Silicon 本机 CPS 使用对应的 `aarch64-apple-darwin` 包。
+CPS v3.29.7 的宿主只支持 RPC v5，旧插件 v0.1.0（RPC v4）不能直接安装运行。旧版 CPS 3.29.3–3.29.6 请继续使用 v0.1.0；升级到 CPS 3.29.7 时需安装 v0.1.1。两版插件使用同一 `history` 状态命名空间与 schema v1，无需转换测试历史。详见 [CPS v3.29.7 升级说明](https://github.com/zyycn/codex-proxy-rs/releases/tag/v3.29.7)。
+
+1. 打开 CPS → 插件管理 → 安装 → 上传包，选 `dist/local.codex-candy-eval-0.1.1-x86_64-unknown-linux-gnu.tar.gz`（Linux x86_64）。Apple Silicon 本机 CPS 使用对应的 `aarch64-apple-darwin` 包。
 2. 确认来源和完整信任，接受制品并启用；无额外插件配置项。
 3. 从插件菜单打开「Codex 能力测试」，选 Client Key、模型和账号，点击测试。
 
@@ -21,9 +23,11 @@
 - **持久历史**：宿主私有状态保留全局最近 64 轮；空间满时只覆盖最早的已结束轮次。展示题目回答、推理强度、耗时、Token、请求 ID 和评分。
 - **重复计费保护**：先保存请求中状态，再调用模型。浏览器断开或进程重启后，未确认结果的题目不会自动重发；在 CPS 请求日志核对后停止该轮，再新建测试。
 
+模型结果支持 JSON/SSE 和 CPS v5 的 WebSocket 原文事件；有解析视图时直接读取，没有解析视图时解析原文 JSON。
+
 每题都构造新的 Codex 会话，复用参考项目固定的 Codex CLI 0.163.0 上下文；约 1.4 万输入 Token 仅是参考估计，实际以 CPS 用量为准。通过 CPS 已支持的 `client_metadata.ws_request_header_x_openai_internal_codex_responses_lite` 投影传递 Responses Lite 标识；无需修改宿主。插件不会执行模型发出的工具调用。
 
-## 首版边界
+## 使用限制
 
 - 每个插件实例同时执行一题。页面顺序推进批量队列；关闭页面会终止页面队列，已保存的待继续轮次可恢复，尚未创建的后续账号需要重新勾选。
 - 模型流读取最多 **120 秒**，为 CPS 管理桥 180 秒期限留出建连及保存时间；与 CPA 参考项目的 3/10 分钟上限不同。无自动重试、定时巡检、通知或自动优先级调整。
@@ -31,6 +35,8 @@
 - 本地协议测试模拟 CPS 和模型返回，浏览器测试使用明确的演示账号。尚未在真实 CPS 安装、调用真实模型或验证生产计费；Linux ELF 已构建，但本机没有 Linux 运行环境，未进行 Linux 进程实跑。
 
 ## 构建与验证
+
+当前验证记录见 [v0.1.1 兼容性验证](VALIDATION-v0.1.1.md)；v0.1.0 的历史记录保留在 [VALIDATION.md](VALIDATION.md)。
 
 要求 Go 1.26+、Rust 1.99.1、目标 Rust std，以及与上述 SDK 一致的 CPS `cpr-plugin` 打包工具。代码只通过固定 Git SDK 依赖宿主，无本地源码路径依赖。
 

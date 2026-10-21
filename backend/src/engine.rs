@@ -6,13 +6,16 @@ use serde_json::Value;
 use std::{io::Write, os::unix::fs::OpenOptionsExt, process::Stdio};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+static ENGINE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub struct Engine(std::path::PathBuf);
 impl Engine {
     pub fn bundled() -> std::io::Result<Self> {
         let path = std::env::current_dir()?.join(format!(
-            ".candy-engine-{}-{}",
+            ".candy-engine-{}-{}-{}",
             std::process::id(),
-            crate::now()
+            crate::now(),
+            ENGINE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let mut file = std::fs::OpenOptions::new()
             .write(true)

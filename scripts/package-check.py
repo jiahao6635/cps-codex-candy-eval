@@ -1,11 +1,16 @@
 """Verify the normalized CPS archive, file hashes and declared resources."""
+import argparse
 import hashlib
 import json
-import sys
 import tarfile
 from pathlib import Path
 
-for argument in sys.argv[1:]:
+parser = argparse.ArgumentParser()
+parser.add_argument("--protocol-version", type=int, default=5)
+parser.add_argument("packages", nargs="+")
+args = parser.parse_args()
+
+for argument in args.packages:
     path = Path(argument)
     with tarfile.open(path) as archive:
         members = {member.name: member for member in archive.getmembers()}
@@ -13,7 +18,7 @@ for argument in sys.argv[1:]:
         manifest = json.load(archive.extractfile("plugin.json"))
         assert manifest["manifestVersion"] == 2
         package = manifest["package"]
-        assert package["protocolVersion"] == 4
+        assert package["protocolVersion"] == args.protocol_version
         for name, digest in package["files"].items():
             assert hashlib.sha256(archive.extractfile(name).read()).hexdigest() == digest, name
         assert set(members) == {"plugin.json", *package["files"]}

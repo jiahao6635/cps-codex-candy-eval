@@ -13,7 +13,16 @@ use std::{collections::BTreeMap, sync::Arc};
 use tokio::io::{AsyncRead, AsyncWrite};
 trait Transport: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Transport for T {}
+#[derive(Clone, Copy)]
+enum WireMode {
+    Json,
+    Sse,
+    WebSocket,
+    RawWebSocket,
+    InvalidWebSocket,
+}
 struct Harness {
+    wire_mode: WireMode,
     io: Box<dyn Transport>,
     task: tokio::task::JoinHandle<()>,
     records: BTreeMap<String, (Value, u64)>,
@@ -27,7 +36,7 @@ impl Drop for Harness {
     }
 }
 impl Harness {
-    async fn new() -> Self {
+    async fn new(wire_mode: WireMode) -> Self {
         let (mut io, task): (Box<dyn Transport>, _) =
             if let Ok(executable) = std::env::var("CANDY_TEST_PLUGIN") {
                 let mut command = tokio::process::Command::new(executable);
@@ -66,7 +75,7 @@ impl Harness {
             &mut io,
             &Frame::control(Message::Hello {
                 handshake: Handshake {
-                    protocol_version: 4,
+                    protocol_version: 5,
                     artifact_sha256: "b".repeat(64),
                     plugin_id: "local.codex-candy-eval".into(),
                     instance_id: "fixture".into(),
@@ -82,7 +91,7 @@ impl Harness {
         assert!(matches!(
             read_frame(&mut io).await.unwrap().message,
             Message::Ready {
-                protocol_version: 4,
+                protocol_version: 5,
                 ..
             }
         ));
@@ -92,6 +101,7 @@ impl Harness {
             records: BTreeMap::new(),
             requests: vec![],
             fail: false,
+            wire_mode,
             sequence: 1,
         }
     }
@@ -99,7 +109,7 @@ impl Harness {
         let call_id = self.sequence;
         self.sequence += 2;
         let method = if body.is_some() { "POST" } else { "GET" };
-        write_frame(&mut self.io,&Frame{message:Message::Call{id:call_id,method:"management.handle".into(),context:CallContext{call_id,instance_id:"fixture".into(),generation:1,incarnation:"fixture".into(),stage:Stage::Management,timeout_ms:120000,resource_stream:false,resource_scope_id:"fixture".into(),request_id:None,attempt_id:None,account_id:None,credential_revision:None,request:Some(Arc::new(RequestContext{method:method.into(),uri:format!("/api/plugins/fixture/{path}"),http_version:"HTTP/1.1".into(),headers:vec![],peer_addr:None,client_ip:None}))},params:json!({"method":method,"path":path,"query":"","content_type":body.as_ref().map(|_|"application/json"),"headers":[]})},payload:body.map(|v|serde_json::to_vec(&v).unwrap()).unwrap_or_default()}).await.unwrap();
+        write_frame(&mut self.io,&Frame{message:Message::Call{id:call_id,method:"management.handle".into(),context:CallContext{call_id,instance_id:"fixture".into(),generation:1,incarnation:"fixture".into(),stage:Stage::Management,timeout_ms:120000,resource_stream:false,resource_scope_id:"fixture".into(),request_id:None,attempt_id:None,account_id:None,credential_revision:None,request:Some(Arc::new(RequestContext{method:method.into(),uri:format!("/api/plugins/fixture/{path}"),http_version:"HTTP/1.1".into(),headers:vec![gateway_plugin_sdk::call::middleware::MiddlewareHeader{name:"x-fixture".into(),value:vec![0xff,0x80]}],peer_addr:None,client_ip:None}))},params:json!({"method":method,"path":path,"query":"","content_type":body.as_ref().map(|_|"application/json"),"headers":[]})},payload:body.map(|v|serde_json::to_vec(&v).unwrap()).unwrap_or_default()}).await.unwrap();
         loop {
             let frame =
                 tokio::time::timeout(std::time::Duration::from_secs(20), read_frame(&mut self.io))
@@ -189,12 +199,32 @@ impl Harness {
                         host: None,
                         wire: Some(WireEvent {
                             protocol: "openai".into(),
-                            payload: WirePayload::Json {
-                                data,
-                                event: None,
-                                id: None,
-                                retry: None,
-                                raw_sse: None,
+                            payload: match self.wire_mode {
+                                WireMode::Json => WirePayload::Json {
+                                    data,
+                                    event: None,
+                                    id: None,
+                                    retry: None,
+                                    raw_sse: None,
+                                },
+                                WireMode::Sse => WirePayload::RawSse {
+                                    frame: format!("data: {}\n\n", data).into_bytes(),
+                                },
+                                WireMode::WebSocket => WirePayload::WebSocket {
+                                    event: None,
+                                    message: serde_json::to_vec(&data).unwrap(),
+                                    data: Some(data),
+                                },
+                                WireMode::RawWebSocket => WirePayload::WebSocket {
+                                    event: None,
+                                    message: serde_json::to_vec(&data).unwrap(),
+                                    data: None,
+                                },
+                                WireMode::InvalidWebSocket => WirePayload::WebSocket {
+                                    event: None,
+                                    message: b"not-json".to_vec(),
+                                    data: None,
+                                },
                             },
                         }),
                     }],
@@ -214,24 +244,44 @@ fn start() -> Value {
 }
 #[tokio::test]
 async fn pinned_account_persistence_and_failure_classification() {
-    let mut h = Harness::new().await;
-    let (status, b) = h.api("api/start", Some(start())).await;
-    assert_eq!(status, 200, "{b}");
-    let id = json!({"id":b["run"]["id"],"slot":b["run"]["slot"]});
-    let (status, b) = h.api("api/step", Some(id.clone())).await;
-    assert_eq!(status, 200, "{b}");
-    assert_eq!(b["run"]["report"]["correct"], 1);
+    for wire_mode in [
+        WireMode::Json,
+        WireMode::Sse,
+        WireMode::WebSocket,
+        WireMode::RawWebSocket,
+    ] {
+        let mut h = Harness::new(wire_mode).await;
+        let (status, b) = h.api("api/start", Some(start())).await;
+        assert_eq!(status, 200, "{b}");
+        let id = json!({"id":b["run"]["id"],"slot":b["run"]["slot"]});
+        let (status, b) = h.api("api/step", Some(id.clone())).await;
+        assert_eq!(status, 200, "{b}");
+        assert_eq!(b["run"]["report"]["correct"], 1);
+        assert_eq!(h.requests.len(), 1);
+        let (status, _) = h.api("api/step", Some(id)).await;
+        assert_eq!(status, 400);
+        assert_eq!(h.requests.len(), 1);
+        let (_, history) = h.api("api/history", None).await;
+        assert_eq!(history["runs"][0]["attempts"][0]["request_id"], "request-1");
+        h.fail = true;
+        let (_, b) = h.api("api/start", Some(start())).await;
+        let id = json!({"id":b["run"]["id"],"slot":b["run"]["slot"]});
+        let (_, b) = h.api("api/step", Some(id)).await;
+        assert_eq!(b["run"]["report"]["valid"], 0);
+        assert_eq!(b["run"]["attempts"][0]["status"], "failed");
+        assert_eq!(b["run"]["report"]["correct"], 0);
+    }
+}
+
+#[tokio::test]
+async fn invalid_websocket_is_request_failure_not_wrong_answer() {
+    let mut h = Harness::new(WireMode::InvalidWebSocket).await;
+    let (status, body) = h.api("api/start", Some(start())).await;
+    assert_eq!(status, 200);
+    let identity = json!({"id":body["run"]["id"],"slot":body["run"]["slot"]});
+    let (status, body) = h.api("api/step", Some(identity)).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["run"]["report"]["valid"], 0);
+    assert_eq!(body["run"]["attempts"][0]["status"], "failed");
     assert_eq!(h.requests.len(), 1);
-    let (status, _) = h.api("api/step", Some(id)).await;
-    assert_eq!(status, 400);
-    assert_eq!(h.requests.len(), 1);
-    let (_, history) = h.api("api/history", None).await;
-    assert_eq!(history["runs"][0]["attempts"][0]["request_id"], "request-1");
-    h.fail = true;
-    let (_, b) = h.api("api/start", Some(start())).await;
-    let id = json!({"id":b["run"]["id"],"slot":b["run"]["slot"]});
-    let (_, b) = h.api("api/step", Some(id)).await;
-    assert_eq!(b["run"]["report"]["valid"], 0);
-    assert_eq!(b["run"]["attempts"][0]["status"], "failed");
-    assert_eq!(b["run"]["report"]["correct"], 0);
 }

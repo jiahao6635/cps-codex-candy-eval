@@ -64,7 +64,7 @@ pub async fn models(host: &HostClient, key: &str) -> Result<Value, PluginFault> 
     meta(
         host,
         "host.models.list",
-        json!({"client_key_id":key,"protocol":"openai","client_version":"codex-candy-eval/0.1.0"}),
+        json!({"client_key_id":key,"protocol":"openai","client_version":concat!("codex-candy-eval/",env!("CARGO_PKG_VERSION"))}),
     )
     .await
 }
@@ -197,6 +197,14 @@ pub async fn execute(
                     }
                     match wire.payload {
                         WirePayload::Json { data, .. } => consume(data, &mut out, &mut complete)?,
+                        WirePayload::WebSocket { data, message, .. } => {
+                            let data = match data {
+                                Some(data) => data,
+                                None => serde_json::from_slice(&message)
+                                    .map_err(|_| fault("WebSocket 模型消息不是有效 JSON"))?,
+                            };
+                            consume(data, &mut out, &mut complete)?;
+                        }
                         WirePayload::RawSse { frame } => {
                             buffer.push_str(
                                 std::str::from_utf8(&frame).map_err(|_| fault("SSE 编码错误"))?,
