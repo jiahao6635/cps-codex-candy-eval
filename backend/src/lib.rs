@@ -11,6 +11,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+// 为模型执行、评分和状态保存预留时间，保持小于管理页面桥的 180 秒期限
+pub const MANAGEMENT_TIMEOUT_MS: u64 = 170_000;
 const SLOTS: usize = 64;
 pub(crate) fn fault(message: impl Into<String>) -> PluginFault {
     PluginFault::new(ErrorCode::InvalidInput, message)

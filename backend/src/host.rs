@@ -157,12 +157,22 @@ pub async fn execute(
     run: &Value,
     body: Value,
 ) -> Result<(String, Result<Output, PluginFault>), PluginFault> {
-    let reply=host.call("host.model.execute_stream",json!({"client_key_id":run["key_id"],"model":run["model"],"protocol":"openai","operation":"generate","provider":"openai","account_id":run["account_id"]}),serde_json::to_vec(&body).map_err(|_|fault("模型请求编码失败"))?).await.map_err(|e|e.into_plugin_fault())?;
+    // 建立流和读取共用期限，另留 35 秒用于关闭、评分及状态保存
+    let budget = host
+        .remaining_budget()
+        .unwrap_or(std::time::Duration::from_secs(170));
+    let model_budget = budget
+        .saturating_sub(std::time::Duration::from_secs(35))
+        .min(std::time::Duration::from_secs(120));
+    if model_budget.is_zero() {
+        return Err(fault("剩余调用时间不足，请稍后重新测试"));
+    }
+    let deadline = tokio::time::Instant::now() + model_budget;
+    let reply=tokio::time::timeout_at(deadline, host.call("host.model.execute_stream",json!({"client_key_id":run["key_id"],"model":run["model"],"protocol":"openai","operation":"generate","provider":"openai","account_id":run["account_id"]}),serde_json::to_vec(&body).map_err(|_|fault("模型请求编码失败"))?)).await.map_err(|_| fault("模型请求建立超时；请查看 CPS 请求日志"))?.map_err(|e|e.into_plugin_fault())?;
     let stream: ModelStreamResult =
         serde_json::from_value(reply.result).map_err(|_| fault("模型流信息错误"))?;
-    // 管理页面桥最多等待 180 秒，给建立请求和保存状态留出时间
-    let seconds = 120;
-    let result = tokio::time::timeout(std::time::Duration::from_secs(seconds), async {
+    let mut ended = false;
+    let result = tokio::time::timeout_at(deadline, async {
         let mut out = Output::default();
         let mut complete = false;
         let mut buffer = String::new();
@@ -178,6 +188,7 @@ pub async fn execute(
                 .map_err(|e| e.into_plugin_fault())?;
             let state: ModelStreamReadResult =
                 serde_json::from_value(reply.result).map_err(|_| fault("模型流状态错误"))?;
+            ended = state.end;
             let batch = if reply.payload.is_empty() && state.events == 0 {
                 ModelEventBatch::default()
             } else {
@@ -226,19 +237,23 @@ pub async fn execute(
     })
     .await
     .unwrap_or_else(|_| Err(fault("模型请求超时")));
-    // Closing also releases host resources after a completed stream.
-    let close = host
-        .call(
-            "host.model.stream_close",
-            json!({"stream":stream.stream}),
-            vec![],
+    // EOF 时宿主已经释放句柄，仅关闭尚未结束的流；父调用结束仍会回收剩余资源
+    if !ended {
+        let close = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            host.call(
+                "host.model.stream_close",
+                json!({"stream":stream.stream}),
+                vec![],
+            ),
         )
         .await;
-    if result.is_err() && close.is_err() {
-        return Ok((
-            stream.request_id,
-            Err(fault("模型请求失败，且关闭流失败；请检查 CPS 日志")),
-        ));
+        if !matches!(close, Ok(Ok(_))) {
+            return Ok((
+                stream.request_id,
+                Err(fault("模型请求失败，且关闭流失败；请检查 CPS 日志")),
+            ));
+        }
     }
     Ok((stream.request_id, result))
 }

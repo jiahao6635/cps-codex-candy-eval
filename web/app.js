@@ -1,8 +1,8 @@
 const $ = id => document.getElementById(id)
-let busy = false, paused = false, accounts = [], runs = [], modelVersion = 0
+let busy = false, paused = false, accounts = [], runs = [], modelVersion = 0, activity = null, activityTimer = null
 const selected = new Set(), expandedAccounts = new Set(), expandedRuns = new Set(), runCache = new Map()
 const kindNames = {candy:'糖果题',fingerprint:'模型指纹',pelican:'画鹈鹕'}
-const statusNames = {ready:'待继续',running:'请求中 / 中断待核对',completed:'已完成',stopped:'已停止'}
+const statusNames = {ready:'待继续',running:'请求未确认 / 请核对日志',completed:'已完成',stopped:'已停止'}
 async function api(path, data) {
   const bridge = window.codexProxyPlugin
   if (!bridge || bridge.version !== 2) throw Error('请从 CPS 插件菜单打开此页')
@@ -17,11 +17,49 @@ function error(e) {$('error').textContent=e.message || String(e)}
 function options(el,items,empty) {el.replaceChildren(new Option(empty,''),...items.map(item=>new Option(item.name || item.id,item.id)))}
 function button(text,handler) {const b=node('button',text,'secondary');b.type='button';b.onclick=()=>Promise.resolve().then(handler).catch(error);return b}
 function selectable(a) {return a.enabled === true && !a.removed}
+function spinner() {const el=node('span',undefined,'spinner');el.setAttribute('aria-hidden','true');return el}
+function paintActivity() {
+  const waiting=activity ? Math.floor((performance.now()-activity.startedAt)/1000) : 0
+  $('progress-spinner').hidden=!activity
+  $('progress-panel').classList.toggle('is-active',!!activity)
+  if(activity){
+    const question=activity.question?' · 第 '+activity.question+'/'+activity.questions+' 题':''
+    const pauseNote=activity.question?'本题完成后暂停':'准备完成后暂停'
+    const message=activity.name+' · '+kindNames[activity.kind]+question+(paused?' · '+pauseNote:'')
+    if($('progress').textContent!==message)$('progress').textContent=message
+    $('progress-detail').textContent='账号 '+activity.accountIndex+'/'+activity.accountTotal+' · '+activity.phase+' · 已等待 '+waiting+' 秒'
+  }else $('progress-detail').textContent=''
+  for(const row of document.querySelectorAll('article.account')){
+    const current=activity?.accountId===row.dataset.account
+    row.classList.toggle('is-running',current)
+    const status=row.querySelector('.account-activity')
+    status.hidden=!current
+    if(current){
+      status.querySelector('.activity-label').textContent=activity.phase+(activity.question?' · 第 '+activity.question+'/'+activity.questions+' 题':'')
+      status.querySelector('.elapsed').textContent='已等待 '+waiting+' 秒'+(paused?' · '+(activity.question?'本题完成后暂停':'准备完成后暂停'):'')
+    }
+    const test=row.querySelector('.test-account')
+    if(test.getAttribute('aria-busy')!==String(current)){
+      test.setAttribute('aria-busy',String(current))
+      test.setAttribute('aria-label',(current?'正在测评 ':'测试 ')+row.querySelector('strong').textContent)
+      test.replaceChildren(...(current?[spinner(),node('span','测评中')]:[node('span','测试')]))
+    }
+  }
+}
+function setActivity(value) {
+  activity=value?{...value,startedAt:performance.now()}:null
+  clearInterval(activityTimer)
+  activityTimer=activity?setInterval(paintActivity,1000):null
+  paintActivity()
+}
 function locked(value) {
   busy=value
   document.querySelectorAll('#config input,#config select,#refresh').forEach(el=>el.disabled=value)
   document.querySelectorAll('.select-account,.test-account').forEach(el=>el.disabled=value || !selectable(allAccounts().find(a=>a.id===el.dataset.account)))
   $('pause').disabled=!value
+  $('pause').textContent='本题完成后暂停'
+  $('start').setAttribute('aria-busy',String(value))
+  $('start').replaceChildren(...(value?[spinner(),node('span','测评进行中')]:[node('span','测试选中的账号')]))
   syncSelection()
 }
 async function models() {
@@ -171,7 +209,9 @@ function drawAccounts() {
     if(!selectable(a))badges.append(node('span',a.removed?'已移除 · 仅历史':'已停用 · 仅历史','tag'))
     info.append(badges);identity.append(box,info);row.append(identity)
     const recent=node('div',undefined,'recent')
-    recent.append(node('div',latest?result(latest):'暂无'+kindNames[kind]+'结果','result'))
+    const current=node('div',undefined,'account-activity'),state=node('div',undefined,'activity-state')
+    current.hidden=true;state.append(spinner(),node('span',undefined,'activity-label'));current.append(state,node('div',undefined,'meta elapsed'));recent.append(current)
+    recent.append(node('div',latest?result(latest):'暂无'+kindNames[kind]+'结果','result recent-result'))
     if(latest)recent.append(node('div',metadata(latest),'meta'),node('div',usageText(latest),'meta'))
     row.append(recent)
     if(latest?.has_drawing)row.append(thumbnail(latest))
@@ -187,7 +227,7 @@ function drawAccounts() {
   if(!visible.length)$('accounts').append(node('p','没有匹配的账号或历史记录','muted'))
   $('count').textContent=visible.length+' / '+allAccounts().length+' 个'
   $('history-count').textContent='已保存 '+runs.length+' 轮 · 所有账号合计最多保留 64 轮，较早的已结束记录会被覆盖'
-  syncSelection()
+  syncSelection();paintActivity()
 }
 async function history() {
   const body=await api('history');runs=body.runs.sort((a,b)=>b.created_at-a.created_at)
@@ -195,26 +235,39 @@ async function history() {
   for(const id of runCache.keys())if(!retained.has(id))runCache.delete(id)
   drawAccounts()
 }
-async function drive(run) {
+async function drive(run,accountIndex=1,accountTotal=1) {
   while(run.status==='ready' && !paused){
-    $('progress').textContent=accountTitle(runAccount(run))+' · '+kindNames[run.kind]+' · 第 '+(run.attempts.length+1)+'/'+run.jobs.length+' 题'
-    run=(await api('step',{id:run.id,slot:run.slot})).run;runCache.delete(run.id);await history()
+    setActivity({accountId:run.account_id,name:accountTitle(runAccount(run)),kind:run.kind,question:run.attempts.length+1,questions:run.jobs.length,accountIndex,accountTotal,phase:'等待模型返回'})
+    run=(await api('step',{id:run.id,slot:run.slot})).run
+    activity.phase='正在刷新结果';paintActivity()
+    runCache.delete(run.id);await history()
   }
   return run
 }
 async function perform(work) {
   if(busy)return;paused=false;$('error').textContent='';locked(true)
-  try{await work();$('progress').textContent=paused?'已暂停，可在历史记录中继续':'测试已完成'}catch(e){error(e);$('progress').textContent='执行已中止，请刷新历史核对请求状态';try{await history()}catch{}}finally{locked(false)}
+  try{await work();$('progress').textContent=paused?'已暂停，可在历史记录中继续':'测试已完成'}catch(e){
+    error(e);setActivity(null);$('progress').textContent='执行已中止，请刷新历史核对请求状态';try{await history()}catch{}
+  }finally{setActivity(null);locked(false)}
 }
 async function startAccounts(ids) {
   if(busy)throw Error('已有测试在执行')
   if(!ids.length)throw Error('请至少选择一个账号')
   if(!$('key').value || !$('model').value)throw Error('请选择 Client Key 和模型')
   const query={kind:$('kind').value,key_id:$('key').value,model:$('model').value,effort:$('effort').value,variant:$('variant').value,runs:Number($('runs').value)}
-  await perform(async()=>{for(const account_id of ids){if(paused)break;const {run}=await api('start',{...query,account_id});await drive(run)}})
+  await perform(async()=>{
+    for(const [index,account_id] of ids.entries()){
+      if(paused)break
+      const a=accounts.find(a=>a.id===account_id)
+      setActivity({accountId:account_id,name:accountTitle(a),kind:query.kind,accountIndex:index+1,accountTotal:ids.length,phase:'正在准备测试'})
+      const {run}=await api('start',{...query,account_id})
+      if(paused)await history()
+      else await drive(run,index+1,ids.length)
+    }
+  })
 }
 $('config').onsubmit=e=>{e.preventDefault();startAccounts([...selected]).catch(error)}
-$('pause').onclick=()=>{paused=true;$('pause').disabled=true;$('progress').textContent='当前请求结束后暂停…'}
+$('pause').onclick=()=>{paused=true;$('pause').disabled=true;$('pause').textContent=activity?.question?'正在等待本题结束…':'正在等待准备完成…';paintActivity()}
 $('all').onchange=()=>{for(const a of visibleAccounts().filter(selectable))$('all').checked?selected.add(a.id):selected.delete(a.id);drawAccounts()}
 $('key').onchange=models
 $('model').onchange=syncSelection

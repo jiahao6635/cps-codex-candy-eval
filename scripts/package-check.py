@@ -6,7 +6,7 @@ import tarfile
 from pathlib import Path
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--protocol-version", type=int, default=5)
+parser.add_argument("--protocol-version", type=int, default=6)
 parser.add_argument("packages", nargs="+")
 args = parser.parse_args()
 

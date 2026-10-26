@@ -32,4 +32,4 @@ cargo "+$TOOLCHAIN" build --release --locked --manifest-path backend/Cargo.toml 
   --binary "$ROOT/backend/target/$BUILD_TARGET/release/cps-codex-candy-eval" \
   --target "$TARGET" --output-dir "$ROOT/dist"
 VERSION="$(python3 -c 'import json; print(json.load(open("plugin.json"))["version"])')"
-python3 scripts/package-check.py --protocol-version 5 dist/local.codex-candy-eval-"$VERSION"-*.tar.gz
+python3 scripts/package-check.py --protocol-version 6 dist/local.codex-candy-eval-"$VERSION"-*.tar.gz
