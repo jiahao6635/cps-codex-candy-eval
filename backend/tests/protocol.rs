@@ -90,7 +90,7 @@ impl Harness {
             &mut io,
             &Frame::control(Message::Hello {
                 handshake: Handshake {
-                    protocol_version: 6,
+                    protocol_version: 7,
                     artifact_sha256: "b".repeat(64),
                     plugin_id: "local.codex-candy-eval".into(),
                     instance_id: "fixture".into(),
@@ -109,10 +109,10 @@ impl Harness {
                 call_budgets,
                 ..
             } => {
-                assert_eq!(protocol_version, 6);
+                assert_eq!(protocol_version, 7);
                 assert_eq!(call_budgets[&Stage::Management], 170_000);
             }
-            _ => panic!("plugin did not complete RPC v6 handshake"),
+            _ => panic!("plugin did not complete RPC v7 handshake"),
         }
         Self {
             io,
@@ -164,6 +164,22 @@ impl Harness {
                     )
                     .await
                     .unwrap();
+                }
+                Message::Suspend { id, epoch } => {
+                    assert_eq!(id, call_id);
+                    assert!(epoch > 0);
+                }
+                Message::Resume { id, epoch } => {
+                    assert_eq!(id, call_id);
+                    write_frame(
+                        &mut self.io,
+                        &Frame::control(Message::Resumed { id, epoch }),
+                    )
+                    .await
+                    .unwrap();
+                }
+                Message::CallbackConsumed { parent_id, .. } => {
+                    assert_eq!(parent_id, call_id);
                 }
                 Message::Result { result, .. } => {
                     return (

@@ -21,6 +21,7 @@ const server=createServer(async(req,res)=>{
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve))
 const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BINARY})
 const page=await browser.newPage({viewport:{width:1440,height:1100}})
+page.setDefaultTimeout(15000)
 const errors=[],external=[]
 page.on('pageerror',e=>errors.push(e.message))
 page.on('request',r=>{if(!r.url().startsWith('http://127.0.0.1:') && !r.url().startsWith('data:'))external.push(r.url())})
@@ -34,7 +35,7 @@ await page.addInitScript(()=>{
   {id:'account-pending',name:'待继续账号',email:'pending@example.invalid',plan:'plus',enabled:true}
  ]
  const time=Date.UTC(2026,9,21,6,0,0)
- const make=(id,account_id,kind,extra={})=>({id,slot:Number(id.slice(1)),created_at:time-Number(id.slice(1))*60_000,account_id,account_name:'openai OAuth',kind,model:'test-model',effort:'low',variant:'original',status:'completed',jobs:[{}],attempts:[{status:'completed',correct:true,answer:'此账户的旧回答 '+account_id+'，答案是 21',duration_ms:100,usage:{input_tokens:14000,output_tokens:20},request_id:'fixture-'+id}],report:{correct:1,valid:1,total:1},...extra})
+ const make=(id,account_id,kind,extra={})=>({id,slot:Number(id.slice(1)),created_at:time-Number(id.slice(1))*60_000,account_id,account_name:'openai OAuth',kind,model:'test-model',effort:'low',variant:'original',status:'completed',jobs:[{}],attempts:[{status:'completed',correct:true,answer:'最少取出21颗（演示回答）',duration_ms:100,usage:{input_tokens:14000,output_tokens:20},request_id:'fixture-'+id}],report:{correct:1,valid:1,total:1},...extra})
  const initial=[make('r0','account-us-east','candy'),make('r1','account-us-west','candy',{report:{correct:0,valid:1,total:1}}),make('r2','account-us-east','pelican',{report:{html:svg}}),make('r3','account-us-west','pelican',{report:{html:'<html><head><style>svg{background:#eff8ee}</style></head><body>'+svg+'</body></html>'}}),make('r4','account-disabled','candy'),make('r5','account-removed','candy',{account_name:'美国旧账号',account_email:'removed@example.invalid'}),make('r6','account-us-east','candy'),make('r7','account-us-east','pelican',{report:{html:'<svg><broken></svg>'}})]
  if(!localStorage.getItem('runs'))localStorage.setItem('runs',JSON.stringify(initial))
  window.fixture={calls:[],failRun:false,failBootstrap:false,holdStart:false,holdStep:false,failStep:false}
@@ -95,10 +96,29 @@ try{
  assert.equal(await page.evaluate(()=>fixture.calls.filter(c=>c.path==='run').length),0,'Initial summary must not fetch full answers')
  await account('account-us-east').locator('.account-history > summary').click()
  await account('account-us-east').locator('.run > summary').first().click()
- await account('account-us-east').getByText('此账户的旧回答 account-us-east，答案是 21',{exact:true}).waitFor()
+ await account('account-us-east').getByText('最少取出21颗（演示回答）',{exact:true}).waitFor()
  assert.equal(await account('account-us-east').locator('.run').count(),2)
  assert.ok(!(await account('account-us-east').textContent()).includes('旧回答 account-us-west'))
  await page.screenshot({path:shots+'/accounts-history.png',fullPage:true})
+ assert.equal(await account('account-us-east').locator('.recent .status-success').textContent(),'✓ 答对')
+ assert.equal(await account('account-us-west').locator('.recent .status-danger').textContent(),'✕ 答错')
+ assert.equal(await account('account-us-east').locator('.sample-heading .status-success').first().textContent(),'✓ 答对')
+ await page.screenshot({path:shots+'/candy-success.png'})
+ await page.emulateMedia({colorScheme:'dark'})
+ await page.screenshot({path:shots+'/candy-success-dark.png'})
+ await page.emulateMedia({colorScheme:'light'})
+ // 混合结果不能全部标绿，失败消息里有 21 也不能被页面重新判为答对
+ await page.evaluate(()=>{
+  const data=JSON.parse(localStorage.getItem('runs'))
+  data.push({...data[0],id:'r90',slot:90,account_id:'account-no-email',report:{correct:1,valid:2,total:3}})
+  data.push({...data[0],id:'r91',slot:91,account_id:'account-pending',report:{correct:0,valid:0,total:1},attempts:[{status:'failed',error:'错误码 21',answer:'21颗',duration_ms:10}]})
+  localStorage.setItem('runs',JSON.stringify(data))
+ })
+ await page.locator('#refresh').click();await ready()
+ assert.equal(await account('account-no-email').locator('.recent .status-warning').textContent(),'◐ 部分答对')
+ assert.equal(await account('account-pending').locator('.recent .status-danger').textContent(),'! 请求失败')
+ assert.equal(await account('account-pending').locator('.recent .status-success').count(),0)
+
  // Search includes names, email and IDs; the header checkbox selects only visible enabled accounts.
  await page.locator('#account-search').fill('us-');await page.locator('#all').check()
  assert.equal(await page.locator('.select-account:checked').count(),2)
@@ -179,7 +199,7 @@ try{
  await account('account-disabled').locator('.run > summary').click()
  await account('account-disabled').getByText('模拟原文加载失败',{exact:true}).waitFor()
  await account('account-disabled').getByRole('button',{name:'重新加载'}).click()
- await account('account-disabled').getByText('此账户的旧回答 account-disabled，答案是 21',{exact:true}).waitFor()
+ await account('account-disabled').getByText('最少取出21颗（演示回答）',{exact:true}).waitFor()
  await page.locator('#account-search').fill('不存在的账号')
  await page.getByText('没有匹配的账号或历史记录',{exact:true}).waitFor()
  await page.locator('#account-search').fill('')

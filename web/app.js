@@ -109,6 +109,25 @@ function result(run) {
   if(!a?.prediction_name)return '有效样本不足'
   return a.prediction_name+' · '+(a.probability==null?'样本不足，未计算概率':(a.probability*100).toFixed(1)+'% 参考库归因概率')
 }
+function statusBadge(label,tone) {return node('span',label,'status-badge status-'+tone)}
+function resultNode(run,classes='result') {
+  const el=node('div',undefined,classes),r=run.report
+  if(run.kind==='candy' && r && !r.error && run.status==='completed'){
+    const allCorrect=r.total>0 && r.valid===r.total && r.correct===r.total
+    const label=allCorrect?'✓ 答对':r.correct>0?'◐ 部分答对':r.valid>0?'✕ 答错':'! 请求失败'
+    el.append(statusBadge(label,allCorrect?'success':r.correct>0?'warning':'danger'))
+  }
+  el.append(node('span',result(run)))
+  return el
+}
+function attemptBadge(attempt,kind) {
+  if(attempt.status==='failed')return statusBadge('! 请求失败','danger')
+  if(attempt.status!=='completed')return statusBadge('待确认','neutral')
+  if(kind!=='candy')return statusBadge('✓ 已完成','neutral')
+  if(attempt.correct===true)return statusBadge('✓ 答对','success')
+  if(attempt.correct===false)return statusBadge('✕ 答错','danger')
+  return statusBadge('未评分','neutral')
+}
 function metadata(run) {
   const effort=run.kind==='fingerprint' || run.effort==='none'?'默认':run.effort
   return [kindNames[run.kind],run.model,effort,run.kind==='pelican'?(run.variant==='all-in-one'?'多合一':'原版'):null,new Date(run.created_at).toLocaleString(),statusNames[run.status]].filter(Boolean).join(' · ')
@@ -165,7 +184,7 @@ function thumbnail(run) {
 function runDetails(run) {
   const el=node('details',undefined,'run'),summary=node('summary'),body=node('div',undefined,'run-body')
   el.dataset.run=run.id;el.open=expandedRuns.has(run.id)
-  summary.append(node('div',result(run),'result'),node('div',metadata(run),'meta'),node('div',usageText(run),'meta'))
+  summary.append(resultNode(run),node('div',metadata(run),'meta'),node('div',usageText(run),'meta'))
   el.append(summary,body)
   const load=async()=>{
     body.replaceChildren(node('p','正在加载原文…','muted'))
@@ -180,7 +199,7 @@ function runDetails(run) {
       if(full.report?.attribution)body.append(node('pre',JSON.stringify(full.report.attribution,null,2)))
       for(const [index,attempt] of full.attempts.entries()){
         const block=node('div',undefined,'sample')
-        block.append(node('div','第 '+(index+1)+' 题 · '+(attempt.status==='failed'?'请求失败':full.kind==='candy'?(attempt.correct?'正确':'答错'):'完成')+' · '+(attempt.duration_ms/1000).toFixed(1)+' 秒'))
+        const heading=node('div',undefined,'sample-heading');heading.append(node('span','第 '+(index+1)+' 题'),attemptBadge(attempt,full.kind),node('span',(attempt.duration_ms/1000).toFixed(1)+' 秒'));block.append(heading)
         if(attempt.request_id)block.append(node('div','请求 ID：'+attempt.request_id,'meta'))
         if(attempt.storage_note)block.append(node('p',attempt.storage_note,'muted'))
         block.append(node('pre',attempt.error || attempt.answer || '没有保存回答原文'));body.append(block)
@@ -211,7 +230,7 @@ function drawAccounts() {
     const recent=node('div',undefined,'recent')
     const current=node('div',undefined,'account-activity'),state=node('div',undefined,'activity-state')
     current.hidden=true;state.append(spinner(),node('span',undefined,'activity-label'));current.append(state,node('div',undefined,'meta elapsed'));recent.append(current)
-    recent.append(node('div',latest?result(latest):'暂无'+kindNames[kind]+'结果','result recent-result'))
+    recent.append(latest?resultNode(latest,'result recent-result'):node('div','暂无'+kindNames[kind]+'结果','result recent-result'))
     if(latest)recent.append(node('div',metadata(latest),'meta'),node('div',usageText(latest),'meta'))
     row.append(recent)
     if(latest?.has_drawing)row.append(thumbnail(latest))

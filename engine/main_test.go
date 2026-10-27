@@ -9,7 +9,7 @@ func TestCandyAndPelican(t *testing.T) {
 	for _, tc := range []struct {
 		answer  string
 		correct bool
-	}{{"答案 21。", true}, {"121", false}, {"210", false}, {"20", false}} {
+	}{{"答案 21。", true}, {"最少取出21颗", true}, {"最少取出**21**个", true}, {"21颗", true}, {"需要取出 21 颗糖果", true}, {"2 1", false}, {"121", false}, {"210", false}, {"20", false}} {
 		v, err := handle(Input{Op: "score", Kind: "candy", Jobs: []Job{{}}, Answers: []string{tc.answer}})
 		if err != nil || v.(map[string]any)["correct"] != tc.correct {
 			t.Fatal(tc, v, err)

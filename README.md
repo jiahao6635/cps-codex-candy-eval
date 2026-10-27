@@ -1,16 +1,16 @@
-# CPS Codex 能力测试 v0.1.3
+# CPS Codex 能力测试 v0.1.4
 
 面向 Codex Proxy RS（CPS）的独立进程插件，参考 [haowang02/cpa-plugin-codex-candy-eval](https://github.com/haowang02/cpa-plugin-codex-candy-eval) 实现。无需 CPA、额外管理密码、Python 或在线指纹服务。
 
 ## 安装与使用
 
-安装包与 SHA-256 校验文件见 [v0.1.3 Release](https://github.com/jiahao6635/cps-codex-candy-eval/releases/tag/v0.1.3)。
+安装包与 SHA-256 校验文件见 [v0.1.4 Release](https://github.com/jiahao6635/cps-codex-candy-eval/releases/tag/v0.1.4)。
 
-最低要求 CPS **3.32.0**，进程协议 RPC v6、management v2。SDK 固定于 CPS v3.32.0 的提交 `6a5300a7b5c649f2a6d548df70ccdd58d15e0025`，兼容目标为已核实的稳定版 [CPS v3.32.0](https://github.com/zyycn/codex-proxy-rs/releases/tag/v3.32.0)。尚未在运行中的 CPS 安装验收。
+最低要求 CPS **3.33.0**，进程协议 RPC v7、management v2。SDK 固定于 CPS v3.33.0 的提交 `8c8618aa0f841638262262e3338c115bc075f125`，兼容目标为 [CPS v3.33.0](https://github.com/zyycn/codex-proxy-rs/releases/tag/v3.33.0)。尚未在运行中的 CPS 安装验收。
 
-使用 RPC v5 的 CPS 宿主请继续使用插件 v0.1.1 或 v0.1.2；升级到 CPS v3.32.0 后需使用插件 v0.1.3。旧版 CPS 3.29.3–3.29.6（RPC v4）继续使用 v0.1.0。同一插件实例沿用 `history` 状态命名空间与 schema v1，升级不自动迁移或清理已有历史。
+使用 RPC v5 的 CPS 宿主请继续使用插件 v0.1.1 或 v0.1.2；CPS v3.32.0（RPC v6）使用 v0.1.3；CPS v3.33.0（RPC v7）使用 v0.1.4。旧版 CPS 3.29.3–3.29.6（RPC v4）继续使用 v0.1.0。同一插件实例沿用 `history` 状态命名空间与 schema v1，升级不自动迁移或清理已有历史。
 
-1. 打开 CPS → 插件管理 → 安装 → 上传包，选 `dist/local.codex-candy-eval-0.1.3-x86_64-unknown-linux-gnu.tar.gz`（Linux x86_64）。Apple Silicon 本机 CPS 使用对应的 `aarch64-apple-darwin` 包。
+1. 打开 CPS → 插件管理 → 安装 → 上传包，选 `dist/local.codex-candy-eval-0.1.4-x86_64-unknown-linux-gnu.tar.gz`（Linux x86_64）。Apple Silicon 本机 CPS 使用对应的 `aarch64-apple-darwin` 包。
 2. 确认来源和完整信任，接受制品并启用；无额外插件配置项。
 3. 从插件菜单打开「Codex 能力测试」，选 Client Key、模型和账号，点击测试。
 
@@ -18,7 +18,7 @@
 
 ## 已实现
 
-- **糖果题**：与参考项目同题，每账号 1–10 次，选择推理强度。沿用“回答包含独立数字 21”启发式评分，答错不重试；原文供人工核对，文本提到 21 不代表其最终结论正确。
+- **糖果题**：与参考项目同题，每账号 1–10 次，选择推理强度。沿用“回答包含独立数字 21”启发式评分，答错不重试；原文供人工核对，文本提到 21 不代表其最终结论正确。账号最近结果、历史轮次和逐题结果展示“✓ 答对”“✕ 答错”或“! 请求失败”；混合轮次显示“部分答对”，不把请求完成等同于答对。
 - **模型指纹**：从同一参考库的 36 道挑战随机抽取 3 道，使用模型默认推理强度，保留系统提示和题目前缀。复用固定的 Go 检测算法、校准、候选库及黄金样本；部分样本只排名，不显示概率，非模型样式的数字序列不归因。概率仅比较内置候选，不能证明真实模型身份。
 - **画鹈鹕**：原版与多合一版，保存模型原文。账号行与历史卡片直接显示静态 SVG 缩略图，点击后在弹窗放大，展示账号、模型、推理强度、绘图版本、时间及用量。支持 SVG/CSS 动画，不执行 JavaScript、不加载外部资源；依赖 HTML 脚本的动画无法播放。SVG 无法预览时仍可展开回答原文。
 - **账号辨识与测试**：显示账号名称、邮箱、完整账号 ID 及套餐；通用的 `openai OAuth` 名称优先显示邮箱。支持按名称、邮箱或 ID 搜索，单行测试或勾选多个账号串行测试；全选只作用于当前可见的已启用账号。可在本题结束后暂停，历史中的待继续轮次可续测。
@@ -40,7 +40,7 @@
 
 ## 构建与验证
 
-当前验证记录见 [v0.1.3 兼容性与测评体验验证](VALIDATION-v0.1.3.md)。历史记录保留在 [v0.1.2 账号与历史验证](VALIDATION-v0.1.2.md)、[v0.1.1 兼容性验证](VALIDATION-v0.1.1.md) 和 [v0.1.0 验证](VALIDATION.md)。
+当前验证记录见 [v0.1.4 兼容性与结果标识验证](VALIDATION-v0.1.4.md)。历史记录保留在 [v0.1.3 验证](VALIDATION-v0.1.3.md)、[v0.1.2 账号与历史验证](VALIDATION-v0.1.2.md)、[v0.1.1 兼容性验证](VALIDATION-v0.1.1.md) 和 [v0.1.0 验证](VALIDATION.md)。
 
 要求 Go 1.26+、Rust 1.99.1、目标 Rust std，以及与上述 SDK 一致的 CPS `cpr-plugin` 打包工具。代码只通过固定 Git SDK 依赖宿主，无本地源码路径依赖。
 
