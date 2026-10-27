@@ -69,10 +69,13 @@ pub async fn models(host: &HostClient, key: &str) -> Result<Value, PluginFault> 
     .await
 }
 pub async fn read(host: &HostClient, slot: usize) -> Result<Option<(Value, u64)>, PluginFault> {
+    read_key(host, &slot.to_string()).await
+}
+pub async fn read_key(host: &HostClient, key: &str) -> Result<Option<(Value, u64)>, PluginFault> {
     let r = meta(
         host,
         "host.state.get",
-        json!({"namespace":"history","key":slot.to_string()}),
+        json!({"namespace":"history","key":key}),
     )
     .await?;
     if r["record"].is_null() {
@@ -91,7 +94,30 @@ pub async fn write(
     value: &Value,
     version: Option<u64>,
 ) -> Result<(), PluginFault> {
-    meta(host,"host.state.put",json!({"namespace":"history","key":slot.to_string(),"value":value,"expected_version":version})).await?;
+    write_key(host, &slot.to_string(), value, version).await
+}
+pub async fn write_key(
+    host: &HostClient,
+    key: &str,
+    value: &Value,
+    version: Option<u64>,
+) -> Result<(), PluginFault> {
+    meta(
+        host,
+        "host.state.put",
+        json!({"namespace":"history","key":key,"value":value,"expected_version":version}),
+    )
+    .await
+    .map_err(|e| {
+        if e.code == gateway_plugin_sdk::ErrorCode::Capacity {
+            gateway_plugin_sdk::PluginFault::new(
+                e.code,
+                "历史存储空间已满，写入未完成；请联系管理员处理",
+            )
+        } else {
+            e
+        }
+    })?;
     Ok(())
 }
 

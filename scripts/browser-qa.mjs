@@ -15,7 +15,8 @@ const server=createServer(async(req,res)=>{
   const [html,js,css]=await Promise.all(['html','js','css'].map(ext=>readFile(path(ext),'utf8')))
   // Match CPS's classic, inlined resource delivery and restrictive page CSP.
   res.setHeader('Content-Type','text/html');res.setHeader('Content-Security-Policy',csp)
-  res.end(html.replace('<link rel="stylesheet" href="app.css">',()=>'<style>'+css+'</style>').replace('<script defer src="app.js"></script>',()=>'<script>'+js+'</script>'))
+  const temml=before?'':await readFile(`${root}/web/vendor/temml.min.js`,'utf8')
+  res.end(html.replace('<link rel="stylesheet" href="app.css">',()=>'<style>'+css+'</style>').replace('<script defer src="vendor/temml.min.js"></script>',()=>'<script>'+temml+'</script>').replace('<script defer src="app.js"></script>',()=>'<script>'+js+'</script>'))
  }catch{res.writeHead(500).end()}
 })
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve))
@@ -36,7 +37,7 @@ await page.addInitScript(()=>{
  ]
  const time=Date.UTC(2026,9,21,6,0,0)
  const make=(id,account_id,kind,extra={})=>({id,slot:Number(id.slice(1)),created_at:time-Number(id.slice(1))*60_000,account_id,account_name:'openai OAuth',kind,model:'test-model',effort:'low',variant:'original',status:'completed',jobs:[{}],attempts:[{status:'completed',correct:true,answer:'最少取出21颗（演示回答）',duration_ms:100,usage:{input_tokens:14000,output_tokens:20},request_id:'fixture-'+id}],report:{correct:1,valid:1,total:1},...extra})
- const initial=[make('r0','account-us-east','candy'),make('r1','account-us-west','candy',{report:{correct:0,valid:1,total:1}}),make('r2','account-us-east','pelican',{report:{html:svg}}),make('r3','account-us-west','pelican',{report:{html:'<html><head><style>svg{background:#eff8ee}</style></head><body>'+svg+'</body></html>'}}),make('r4','account-disabled','candy'),make('r5','account-removed','candy',{account_name:'美国旧账号',account_email:'removed@example.invalid'}),make('r6','account-us-east','candy'),make('r7','account-us-east','pelican',{report:{html:'<svg><broken></svg>'}})]
+ const initial=[make('r0','account-us-east','candy',{attempts:[{status:'completed',correct:true,answer:'**答案：21**，公式 \\(\\frac{1}{2}\\) <img src=x onerror=alert(1)>',duration_ms:100,usage:{input_tokens:14000,output_tokens:20}}]}),make('r1','account-us-west','candy',{attempts:[{status:'completed',correct:false,answer:'错误答案',duration_ms:100}],report:{correct:0,valid:1,total:1}}),make('r2','account-us-east','pelican',{report:{html:svg}}),make('r3','account-us-west','pelican',{report:{html:'<html><head><style>svg{background:#eff8ee}</style></head><body>'+svg+'</body></html>'}}),make('r4','account-disabled','candy'),make('r5','account-removed','candy',{account_name:'美国旧账号',account_email:'removed@example.invalid'}),make('r6','account-us-east','candy'),make('r7','account-us-east','pelican',{report:{html:'<svg><broken></svg>'}})]
  if(!localStorage.getItem('runs'))localStorage.setItem('runs',JSON.stringify(initial))
  window.fixture={calls:[],failRun:false,failBootstrap:false,holdStart:false,holdStep:false,failStep:false}
  window.codexProxyPlugin={version:2,request:async q=>{
@@ -49,8 +50,8 @@ await page.addInitScript(()=>{
   }
   if(path==='models')out={models:['test-model']}
   if(path==='history')out={runs:location.pathname==='/before'?runs:runs.map(r=>{
-   const summary=structuredClone(r);delete summary.jobs;summary.attempts.forEach(a=>delete a.answer);summary.has_drawing=!!summary.report?.html;if(summary.report)delete summary.report.html;return summary
-  }),limit:64}
+   const summary=structuredClone(r);delete summary.jobs;summary.attempts.forEach(a=>{if(a.answer)a.preview=Array.from(a.answer).slice(0,160).join('');delete a.answer});summary.has_drawing=!!summary.report?.html;if(summary.report)delete summary.report.html;return summary
+  }),limit:1200,next:null}
   if(path==='run'){
    if(window.fixture.failRun){window.fixture.failRun=false;throw Error('模拟原文加载失败')}
    out={run:runs.find(r=>r.id===data.id && r.slot===data.slot)}
@@ -94,9 +95,30 @@ try{
  assert.equal(await account('account-disabled').locator('input').isDisabled(),true)
  assert.equal(await account('account-removed').locator('.test-account').isDisabled(),true)
  assert.equal(await page.evaluate(()=>fixture.calls.filter(c=>c.path==='run').length),0,'Initial summary must not fetch full answers')
+ assert.match(await account('account-us-east').locator('.rate-value').textContent(),/100% · 2\/2/)
+ assert.match(await account('account-us-west').locator('.rate-value').textContent(),/0% · 0\/1/)
+ await account('account-us-east').locator('.result-mark').first().click()
+ await page.locator('#record-preview[open]').waitFor()
+ assert.equal(await page.locator('#record-content strong').textContent(),'答案：21')
+ assert.equal(await page.locator('#record-content math').count(),1)
+ assert.equal(await page.locator('#record-content img').count(),0)
+ await page.locator('#close-record').click()
+ await page.locator('#account-filter').selectOption('wrong')
+ assert.equal(await page.locator('article.account').count(),1)
+ assert.equal(await account('account-us-west').count(),1)
+ await page.locator('#account-filter').selectOption('untested')
+ assert.equal(await account('account-no-email').count(),1)
+ await page.locator('#account-filter').selectOption('all')
+ await page.locator('#account-sort').selectOption('rate')
+ assert.equal(await page.locator('article.account').first().getAttribute('data-account'),'account-us-west')
+ await page.locator('#account-sort').selectOption('default')
+ await page.locator('#effort').selectOption('high')
+ assert.match(await account('account-us-east').locator('.rate-value').textContent(),/暂无评分/)
+ assert.equal(await account('account-us-east').locator('.mark-other').count(),2)
+ await page.locator('#effort').selectOption('low')
  await account('account-us-east').locator('.account-history > summary').click()
  await account('account-us-east').locator('.run > summary').first().click()
- await account('account-us-east').getByText('最少取出21颗（演示回答）',{exact:true}).waitFor()
+ await account('account-us-east').locator('.answer-text').first().waitFor()
  assert.equal(await account('account-us-east').locator('.run').count(),2)
  assert.ok(!(await account('account-us-east').textContent()).includes('旧回答 account-us-west'))
  await page.screenshot({path:shots+'/accounts-history.png',fullPage:true})
@@ -118,6 +140,10 @@ try{
  assert.equal(await account('account-no-email').locator('.recent .status-warning').textContent(),'◐ 部分答对')
  assert.equal(await account('account-pending').locator('.recent .status-danger').textContent(),'! 请求失败')
  assert.equal(await account('account-pending').locator('.recent .status-success').count(),0)
+ assert.match(await account('account-pending').locator('.rate-value').textContent(),/暂无评分/)
+ await page.locator('#account-filter').selectOption('failed')
+ assert.equal(await account('account-pending').count(),1)
+ await page.locator('#account-filter').selectOption('all')
 
  // Search includes names, email and IDs; the header checkbox selects only visible enabled accounts.
  await page.locator('#account-search').fill('us-');await page.locator('#all').check()
@@ -199,7 +225,7 @@ try{
  await account('account-disabled').locator('.run > summary').click()
  await account('account-disabled').getByText('模拟原文加载失败',{exact:true}).waitFor()
  await account('account-disabled').getByRole('button',{name:'重新加载'}).click()
- await account('account-disabled').getByText('最少取出21颗（演示回答）',{exact:true}).waitFor()
+ await account('account-disabled').locator('.answer-text').first().waitFor()
  await page.locator('#account-search').fill('不存在的账号')
  await page.getByText('没有匹配的账号或历史记录',{exact:true}).waitFor()
  await page.locator('#account-search').fill('')
@@ -213,6 +239,7 @@ try{
  await page.screenshot({path:shots+'/dark.png',fullPage:true})
  await page.setViewportSize({width:390,height:844})
  await page.reload();await ready();await page.locator('#kind').selectOption('pelican')
+ await page.locator('.account-panel').evaluate(el=>el.scrollIntoView({block:'start'}))
  await page.waitForFunction(()=>document.querySelector('.account-row .thumbnail img')?.naturalWidth>0)
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false)
  await page.locator('.account-panel').evaluate(el=>el.scrollIntoView({block:'start'}))

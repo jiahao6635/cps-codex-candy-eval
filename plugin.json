@@ -3,7 +3,7 @@
   "name": "codex-candy-eval",
   "publisher": "local",
   "displayName": "Codex 能力测试",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "糖果题、模型行为指纹和鹈鹕绘图；指定 CPS 账号测试并保存历史",
   "license": "MIT",
   "engines": {
@@ -19,9 +19,11 @@
   "resources": {
     "web/index.html": "text/html",
     "web/app.js": "text/javascript",
+    "web/vendor/temml.min.js": "text/javascript",
     "web/app.css": "text/css",
     "legal/CPA-LICENSE": "text/plain",
     "legal/NOTICE": "text/plain",
+    "legal/TEMML-LICENSE": "text/plain",
     "legal/DETECTOR-LICENSE": "text/plain",
     "legal/THIRD-PARTY-LICENSES.txt": "text/plain"
   },
@@ -32,7 +34,7 @@
       "schema": {
         "type": "object"
       },
-      "maximumRecords": 64,
+      "maximumRecords": 1201,
       "maximumBytes": 16777216,
       "maximumValueBytes": 262144,
       "migratesFrom": []

@@ -13,7 +13,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 // 为模型执行、评分和状态保存预留时间，保持小于管理页面桥的 180 秒期限
 pub const MANAGEMENT_TIMEOUT_MS: u64 = 170_000;
-const SLOTS: usize = 64;
+const LEGACY_SLOTS: usize = 64;
+const SLOTS: usize = 1200;
+const GROUP_TARGET: usize = 20;
 pub(crate) fn fault(message: impl Into<String>) -> PluginFault {
     PluginFault::new(ErrorCode::InvalidInput, message)
 }
@@ -40,6 +42,7 @@ fn build(service: Arc<Service>) -> Result<ComposedPlugin, AuthorError> {
             ("GET", "api/bootstrap"),
             ("POST", "api/models"),
             ("GET", "api/history"),
+            ("POST", "api/history"),
             ("POST", "api/run"),
             ("POST", "api/start"),
             ("POST", "api/step"),
@@ -57,13 +60,18 @@ fn build(service: Arc<Service>) -> Result<ComposedPlugin, AuthorError> {
             response_content_types: vec!["application/json".into()],
         })
         .collect(),
-        resources: ["web/index.html", "web/app.js", "web/app.css"]
-            .into_iter()
-            .map(|path| ManagementResource {
-                path: path.into(),
-                public: false,
-            })
-            .collect(),
+        resources: [
+            "web/index.html",
+            "web/app.js",
+            "web/app.css",
+            "web/vendor/temml.min.js",
+        ]
+        .into_iter()
+        .map(|path| ManagementResource {
+            path: path.into(),
+            public: false,
+        })
+        .collect(),
         pages: vec![ManagementPage {
             id: "candy-eval".into(),
             title: "Codex 能力测试".into(),
@@ -119,22 +127,56 @@ struct Identity {
     id: String,
     slot: usize,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistoryPage {
+    cursor: usize,
+}
 fn input<T: serde::de::DeserializeOwned>(
     c: &TypedCall<ManagementRequest>,
 ) -> Result<T, PluginFault> {
     serde_json::from_slice(&c.payload).map_err(|_| fault("请求参数格式错误"))
 }
-async fn histories(
+async fn history_slots(
     h: &gateway_plugin_sdk::client::HostClient,
+) -> Result<Vec<usize>, PluginFault> {
+    let mut slots: Vec<usize> = (0..LEGACY_SLOTS).collect();
+    if let Some((catalog, _)) = host::read_key(h, "catalog").await? {
+        let extra = catalog["slots"]
+            .as_array()
+            .ok_or_else(|| fault("历史索引无效，已停止写入以保护记录"))?;
+        for value in extra {
+            let slot = value
+                .as_u64()
+                .and_then(|v| usize::try_from(v).ok())
+                .filter(|v| (LEGACY_SLOTS..SLOTS).contains(v))
+                .ok_or_else(|| fault("历史索引无效，已停止写入以保护记录"))?;
+            if slots.contains(&slot) {
+                return Err(fault("历史索引重复，已停止写入以保护记录"));
+            }
+            slots.push(slot);
+        }
+    }
+    slots.sort_unstable();
+    Ok(slots)
+}
+async fn read_histories(
+    h: &gateway_plugin_sdk::client::HostClient,
+    slots: &[usize],
 ) -> Result<Vec<(usize, Value, u64)>, PluginFault> {
     let mut rows = vec![];
-    for slot in 0..SLOTS {
+    for &slot in slots {
         if let Some((r, v)) = host::read(h, slot).await? {
             rows.push((slot, r, v))
         }
     }
     rows.sort_by_key(|(_, r, _)| std::cmp::Reverse(r["created_at"].as_u64().unwrap_or(0)));
     Ok(rows)
+}
+async fn histories(
+    h: &gateway_plugin_sdk::client::HostClient,
+) -> Result<Vec<(usize, Value, u64)>, PluginFault> {
+    read_histories(h, &history_slots(h).await?).await
 }
 fn history_summary(mut run: Value) -> Value {
     // 列表不携带题目、身份校验字段和回答正文，绘图及原文按轮次读取
@@ -145,6 +187,12 @@ fn history_summary(mut run: Value) -> Value {
     if let Some(attempts) = run["attempts"].as_array_mut() {
         for attempt in attempts {
             if let Some(fields) = attempt.as_object_mut() {
+                if let Some(answer) = fields.get("answer").and_then(Value::as_str) {
+                    fields.insert(
+                        "preview".into(),
+                        json!(answer.chars().take(160).collect::<String>()),
+                    );
+                }
                 fields.remove("answer");
             }
         }
@@ -172,6 +220,18 @@ async fn dispatch(s: &Service, c: &TypedCall<ManagementRequest>) -> Result<Value
         ("GET", "api/history") => Ok(
             json!({"runs":histories(h).await?.into_iter().map(|(_,r,_)|history_summary(r)).collect::<Vec<_>>(),"limit":SLOTS}),
         ),
+        ("POST", "api/history") => {
+            let q: HistoryPage = input(c)?;
+            let slots = history_slots(h).await?;
+            if q.cursor > slots.len() {
+                return Err(fault("历史分页位置无效"));
+            }
+            let end = (q.cursor + 24).min(slots.len());
+            let rows = read_histories(h, &slots[q.cursor..end]).await?;
+            Ok(
+                json!({"runs":rows.into_iter().map(|(_,r,_)|history_summary(r)).collect::<Vec<_>>(),"next":if end < slots.len() {Some(end)} else {None},"limit":SLOTS}),
+            )
+        }
         ("POST", "api/run") => {
             let q: Identity = input(c)?;
             if q.slot >= SLOTS {
@@ -229,8 +289,25 @@ async fn dispatch(s: &Service, c: &TypedCall<ManagementRequest>) -> Result<Value
             .await?;
             let _guard = s.lock.lock().await;
             let history = histories(h).await?;
-            let slot = (0..SLOTS)
-                .find(|slot| !history.iter().any(|(i, _, _)| i == slot))
+            let group_count = history
+                .iter()
+                .filter(|(_, v, _)| v["account_id"] == q.account_id && v["kind"] == q.kind)
+                .count();
+            let slot = (group_count >= GROUP_TARGET)
+                .then(|| {
+                    history
+                        .iter()
+                        .rev()
+                        .find(|(_, r, _)| {
+                            r["account_id"] == q.account_id
+                                && r["kind"] == q.kind
+                                && ["completed", "stopped"]
+                                    .contains(&r["status"].as_str().unwrap_or(""))
+                        })
+                        .map(|(i, _, _)| *i)
+                })
+                .flatten()
+                .or_else(|| (0..SLOTS).find(|slot| !history.iter().any(|(i, _, _)| i == slot)))
                 .or_else(|| {
                     history
                         .iter()
@@ -240,12 +317,25 @@ async fn dispatch(s: &Service, c: &TypedCall<ManagementRequest>) -> Result<Value
                         })
                         .map(|(i, _, _)| *i)
                 })
-                .ok_or_else(|| fault("64 条历史槽位已满，请先停止未完成测试"))?;
+                .ok_or_else(|| fault("历史槽位已满，请先停止未完成测试"))?;
             let version = history
                 .iter()
                 .find(|(i, _, _)| *i == slot)
                 .map(|(_, _, v)| *v);
             let r = json!({"id":format!("{}-{}",now(),slot),"slot":slot,"created_at":now(),"account_id":q.account_id,"account_name":account["name"],"account_email":account["email"],"account_plan":account["plan"],"key_id":q.key_id,"model":q.model,"kind":q.kind,"effort":q.effort,"variant":q.variant,"jobs":jobs,"attempts":[],"status":"ready","report":null,"identity":[a["authentication_kind"],a["upstream_user_id"],a["upstream_account_id"]],"credential_revision":a["credential_revision"]});
+            if slot >= LEGACY_SLOTS {
+                let current = host::read_key(h, "catalog").await?;
+                let (mut catalog, catalog_version) =
+                    current.map_or((json!({"slots":[]}), None), |(v, n)| (v, Some(n)));
+                let slots = catalog["slots"]
+                    .as_array_mut()
+                    .ok_or_else(|| fault("历史索引无效"))?;
+                if !slots.contains(&json!(slot)) {
+                    slots.push(json!(slot));
+                    // Reserve the index before the record so an interrupted write never hides history.
+                    host::write_key(h, "catalog", &catalog, catalog_version).await?;
+                }
+            }
             host::write(h, slot, &r, version).await?;
             Ok(json!({"run":r}))
         }

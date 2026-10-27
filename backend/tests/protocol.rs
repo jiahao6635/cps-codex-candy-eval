@@ -29,6 +29,7 @@ struct Harness {
     accounts: Vec<Value>,
     requests: Vec<(Value, Value)>,
     fail: bool,
+    fail_state_put: bool,
     end: bool,
     stream_open: bool,
     stream_closes: usize,
@@ -121,6 +122,7 @@ impl Harness {
             accounts: vec![account()],
             requests: vec![],
             fail: false,
+            fail_state_put: false,
             end: true,
             stream_open: false,
             stream_closes: 0,
@@ -145,6 +147,21 @@ impl Harness {
                 Message::Callback {
                     id, method, params, ..
                 } => {
+                    if method == "host.state.put" && self.fail_state_put {
+                        write_frame(
+                            &mut self.io,
+                            &Frame::control(Message::Error {
+                                id,
+                                error: gateway_plugin_sdk::PluginFault::new(
+                                    gateway_plugin_sdk::ErrorCode::Capacity,
+                                    "state quota is exhausted",
+                                ),
+                            }),
+                        )
+                        .await
+                        .unwrap();
+                        continue;
+                    }
                     let (result, payload) = self.callback(&method, params, frame.payload);
                     if let Some((seconds, respond)) = self.delays.remove(method.as_str()) {
                         // 只在进程内会话推进 Tokio 时间，模拟宿主长时间没有返回回调
@@ -419,7 +436,7 @@ async fn account_facts_and_legacy_history_are_readable_without_bulk_answers() {
         400
     );
     assert_eq!(
-        h.api("api/run", Some(json!({"id":"legacy-63","slot":64})))
+        h.api("api/run", Some(json!({"id":"legacy-63","slot":1200})))
             .await
             .0,
         400
@@ -428,9 +445,65 @@ async fn account_facts_and_legacy_history_are_readable_without_bulk_answers() {
 
     let (status, body) = h.api("api/start", Some(start())).await;
     assert_eq!(status, 200);
+    assert_eq!(body["run"]["slot"], 64);
     assert_eq!(body["run"]["account_email"], "us-east@example.invalid");
     assert_eq!(body["run"]["account_plan"], "pro");
     assert_eq!(h.records.get("1"), original.get("1"));
+    assert_eq!(h.records["catalog"].0["slots"], json!([64]));
+    let (_, after) = h.api("api/history", None).await;
+    assert_eq!(after["runs"].as_array().unwrap().len(), 65);
+    for (key, value) in original {
+        assert_eq!(h.records.get(&key), Some(&value));
+    }
+    let mut cursor = Some(0);
+    let mut paged = Vec::new();
+    while let Some(offset) = cursor {
+        let (status, page) = h.api("api/history", Some(json!({"cursor":offset}))).await;
+        assert_eq!(status, 200);
+        assert!(serde_json::to_vec(&page).unwrap().len() < 1024 * 1024);
+        paged.extend(
+            page["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v["id"].clone()),
+        );
+        cursor = page["next"].as_u64();
+    }
+    assert_eq!(paged.len(), 65);
+}
+
+#[tokio::test]
+async fn retention_reuses_only_the_current_account_and_kind_when_full() {
+    let mut h = Harness::new(WireMode::Json).await;
+    for slot in 0..20 {
+        h.records.insert(slot.to_string(), (json!({"id":format!("old-{slot}"),"slot":slot,"created_at":slot,"account_id":"a","kind":"candy","status":"completed","attempts":[]}), 1));
+    }
+    h.records.insert("20".into(), (json!({"id":"other","slot":20,"created_at":0,"account_id":"other","kind":"candy","status":"completed","attempts":[]}), 2));
+    let before_other = h.records["20"].clone();
+    let (status, body) = h.api("api/start", Some(start())).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["run"]["slot"], 0);
+    assert_eq!(h.records["20"], before_other);
+    assert_eq!(h.records.len(), 21);
+}
+
+#[tokio::test]
+async fn quota_error_does_not_remove_existing_history() {
+    let mut h = Harness::new(WireMode::Json).await;
+    h.records.insert("0".into(), (json!({"id":"saved","slot":0,"created_at":1,"account_id":"a","kind":"candy","status":"completed","attempts":[]}), 1));
+    let before = h.records.clone();
+    h.fail_state_put = true;
+    let (status, response) = h.api("api/start", Some(start())).await;
+    assert_eq!(status, 400);
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("历史存储空间已满")
+    );
+    assert_eq!(h.records, before);
+    assert!(h.requests.is_empty());
 }
 
 #[tokio::test]

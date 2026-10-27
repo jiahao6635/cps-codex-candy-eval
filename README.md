@@ -1,16 +1,16 @@
-# CPS Codex 能力测试 v0.1.4
+# CPS Codex 能力测试 v0.1.5
 
 面向 Codex Proxy RS（CPS）的独立进程插件，参考 [haowang02/cpa-plugin-codex-candy-eval](https://github.com/haowang02/cpa-plugin-codex-candy-eval) 实现。无需 CPA、额外管理密码、Python 或在线指纹服务。
 
 ## 安装与使用
 
-安装包与 SHA-256 校验文件见 [v0.1.4 Release](https://github.com/jiahao6635/cps-codex-candy-eval/releases/tag/v0.1.4)。
+安装包与 SHA-256 校验文件见 [v0.1.5 Release](https://github.com/jiahao6635/cps-codex-candy-eval/releases/tag/v0.1.5)。
 
 最低要求 CPS **3.33.0**，进程协议 RPC v7、management v2。SDK 固定于 CPS v3.33.0 的提交 `8c8618aa0f841638262262e3338c115bc075f125`，兼容目标为 [CPS v3.33.0](https://github.com/zyycn/codex-proxy-rs/releases/tag/v3.33.0)。尚未在运行中的 CPS 安装验收。
 
-使用 RPC v5 的 CPS 宿主请继续使用插件 v0.1.1 或 v0.1.2；CPS v3.32.0（RPC v6）使用 v0.1.3；CPS v3.33.0（RPC v7）使用 v0.1.4。旧版 CPS 3.29.3–3.29.6（RPC v4）继续使用 v0.1.0。同一插件实例沿用 `history` 状态命名空间与 schema v1，升级不自动迁移或清理已有历史。
+使用 RPC v5 的 CPS 宿主请继续使用插件 v0.1.1 或 v0.1.2；CPS v3.32.0（RPC v6）使用 v0.1.3；CPS v3.33.0（RPC v7）使用 v0.1.4 或 v0.1.5。旧版 CPS 3.29.3–3.29.6（RPC v4）继续使用 v0.1.0。同一插件实例沿用 `history` 状态命名空间与 schema v1，升级不自动迁移或清理已有历史。
 
-1. 打开 CPS → 插件管理 → 安装 → 上传包，选 `dist/local.codex-candy-eval-0.1.4-x86_64-unknown-linux-gnu.tar.gz`（Linux x86_64）。Apple Silicon 本机 CPS 使用对应的 `aarch64-apple-darwin` 包。
+1. 打开 CPS → 插件管理 → 安装 → 上传包，选 `local.codex-candy-eval-0.1.5-x86_64-unknown-linux-gnu.tar.gz`（Linux x86_64）。Apple Silicon 本机 CPS 使用对应的 `aarch64-apple-darwin` 包。
 2. 确认来源和完整信任，接受制品并启用；无额外插件配置项。
 3. 从插件菜单打开「Codex 能力测试」，选 Client Key、模型和账号，点击测试。
 
@@ -24,7 +24,8 @@
 - **账号辨识与测试**：显示账号名称、邮箱、完整账号 ID 及套餐；通用的 `openai OAuth` 名称优先显示邮箱。支持按名称、邮箱或 ID 搜索，单行测试或勾选多个账号串行测试；全选只作用于当前可见的已启用账号。可在本题结束后暂停，历史中的待继续轮次可续测。
 - **测评进度**：主按钮、当前账号和进度区显示转圈图标，并显示账号批次、当前题数与本题等待秒数，不估算完成百分比。执行中禁用重复提交，仍可搜索账号、展开旧历史和查看绘图。暂停会等待当前题完成；准备阶段暂停则不会发送题目。系统开启减少动态效果时保留静态图标与文字提示。
 - **按账号查看历史**：历史按稳定账号 ID 归组，可切换当前测试类型或全部测试。停用账号和已移除账号的保留记录仍可查看，测试按钮禁用。新记录保存名称、邮箱、套餐快照；旧记录通过账号 ID 关联当前资料，缺少资料时展示原名称与 ID。列表只加载摘要，原文和绘图按需读取。
-- **持久范围**：宿主私有状态保留**所有账号合计最近 64 轮**，不是每个账号 64 轮；空间满时只覆盖最早的已结束轮次。页面明确展示已保存数量与上限。旧版已覆盖或清除的记录无法恢复，升级不清空已有状态。
+- **统计与筛选**：按账号、当前模型和推理强度统计糖果题答对次数；请求失败不进入分母。最近 20 次答题可点击查看详细原文，可筛选账号状态或按正确率和时间排序。
+- **持久范围**：沿用旧状态及其 64 个槽位，新增历史索引和最多 1200 个轮次槽位，宿主总空间上限 16 MiB。每个账号每种测试保留最近 20 轮，达到上限后新测试覆盖同组最早的已结束轮次；总槽位耗尽时覆盖最早的已结束轮次。字节配额耗尽时写入失败，不自动删除记录。升级不会清空旧数据；旧版已经覆盖或清除的记录无法恢复。
 - **重复计费保护**：先保存请求中状态，再调用模型。浏览器断开或进程重启后，未确认结果的题目不会自动重发；刷新后保留的 `running` 记录显示“请求未确认 / 请核对日志”，不会显示为仍在本页执行或持续转圈。在 CPS 请求日志核对后停止该轮，再新建测试。
 
 模型结果支持 JSON/SSE 和 CPS 的 WebSocket 原文事件；有解析视图时直接读取，没有解析视图时解析原文 JSON。
@@ -58,8 +59,8 @@ PLAYWRIGHT_PATH=/path/to/playwright CHROME_BINARY=/path/to/chrome node scripts/b
 
 CPS 包名中的 `linux-gnu` 来自官方打包工具的 Linux 平台命名；实际二进制是面向 Linux x86_64 的静态 musl ELF，不依赖服务端 glibc。离线 Go 引擎嵌入 Rust 可执行文件，启动时在宿主提供的私有可执行工作目录释放，正常退出时删除。
 
-`engine/` 负责题目、Codex 请求构造和离线评分；`backend/` 负责 CPS 协议和状态；`web/` 为无依赖页面；`scripts/` 提供构建、归档校验和浏览器测试。安装包内无凭据、管理地址或演示数据。
+`engine/` 负责题目、Codex 请求构造和离线评分；`backend/` 负责 CPS 协议和状态；`web/` 包含页面和离线公式渲染库；`scripts/` 提供构建、归档校验和浏览器测试。安装包内无凭据、管理地址或演示数据。
 
 ## 来源与许可
 
-参考项目固定提交 `4f8367642cc1e629c4ee15a975e5e0fc53c4ac16`（MIT）。指纹算法与库来自 `Ikaleio/lm-detector` 的 `654c8334bb53951aaf04cbd61252d163649e1369`（MIT）。来源声明及许可证在 `legal/` 和 `engine/data/lm-detector/README.md`，均随包分发。CPS SDK 为 Apache-2.0；第三方依赖许可汇总见 `legal/THIRD-PARTY-LICENSES.txt`。
+参考项目固定提交 `4f8367642cc1e629c4ee15a975e5e0fc53c4ac16`（MIT）。指纹算法与库来自 `Ikaleio/lm-detector` 的 `654c8334bb53951aaf04cbd61252d163649e1369`（MIT）。公式渲染使用 Temml 0.13.5（MIT）。来源声明及许可证在 `legal/` 和 `engine/data/lm-detector/README.md`，均随包分发。CPS SDK 为 Apache-2.0；第三方依赖许可汇总见 `legal/THIRD-PARTY-LICENSES.txt`。

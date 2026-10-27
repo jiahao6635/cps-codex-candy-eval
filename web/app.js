@@ -86,8 +86,57 @@ function runAccount(run) {
   return accounts.find(a=>a.id===run.account_id) || {id:run.account_id,name:run.account_name,email:run.account_email,plan:run.account_plan}
 }
 function visibleAccounts() {
-  const search=$('account-search').value.trim().toLowerCase()
-  return allAccounts().filter(a=>!search || [a.id,a.name,a.email,...runs.filter(r=>r.account_id===a.id).flatMap(r=>[r.account_name,r.account_email])].some(value=>String(value || '').toLowerCase().includes(search)))
+  const search=$('account-search').value.trim().toLowerCase(),filter=$('account-filter').value,kind=$('kind').value
+  const visible=allAccounts().filter(a=>{
+    const latest=runs.find(r=>r.account_id===a.id && r.kind===kind)
+    const match=!search || [a.id,a.name,a.email,...runs.filter(r=>r.account_id===a.id).flatMap(r=>[r.account_name,r.account_email])].some(value=>String(value || '').toLowerCase().includes(search))
+    return match && (filter==='all' || filter==='enabled' && selectable(a) || filter==='untested' && !latest || filter==='wrong' && latest?.kind==='candy' && (latest.attempts || []).some(x=>x.status==='completed' && x.correct===false) || filter==='failed' && (latest?.attempts || []).some(x=>x.status==='failed'))
+  })
+  if($('account-sort').value==='recent')visible.sort((a,b)=>(runs.find(r=>r.account_id===b.id && r.kind===kind)?.created_at || 0)-(runs.find(r=>r.account_id===a.id && r.kind===kind)?.created_at || 0))
+  if($('account-sort').value==='rate')visible.sort((a,b)=>rate(a.id).value-rate(b.id).value)
+  return visible
+}
+function rate(id) {
+  const attempts=runs.filter(r=>r.account_id===id && r.kind==='candy' && r.model===$('model').value && (r.effort || 'none')===$('effort').value).flatMap(r=>r.attempts || []).filter(a=>a.status==='completed' && typeof a.correct==='boolean')
+  const correct=attempts.filter(a=>a.correct).length
+  return {correct,total:attempts.length,value:attempts.length?correct/attempts.length:Infinity}
+}
+function markKind(a) {return a.status==='failed'?'failed':a.status==='completed' && a.correct===true?'correct':a.status==='completed' && a.correct===false?'wrong':'pending'}
+const markLabels={correct:'答对',wrong:'答错',failed:'请求失败',pending:'待确认'}
+async function showRecord(run,index) {
+  const attempt=(await fullRun(run)).attempts?.[index]
+  if(!attempt)throw Error('此记录不存在，请刷新列表')
+  $('record-title').textContent=accountTitle(runAccount(run))+' · '+markLabels[markKind(attempt)]
+  const content=$('record-content');content.replaceChildren(node('p',metadata(run),'meta'),node('p',usageText({...run,attempts:[attempt]}),'meta'),answerView(attempt.error || attempt.answer || '没有保存回答原文'))
+  $('record-preview').showModal()
+}
+function recentMarks(accountRuns) {
+  const wrap=node('div',undefined,'recent-marks')
+  const records=accountRuns.filter(r=>r.kind==='candy').flatMap(r=>(r.attempts || []).map((a,i)=>({run:r,attempt:a,index:i})).reverse()).slice(0,20)
+  for(const {run,attempt,index} of records){
+    const kind=markKind(attempt),label=markLabels[kind],mark=button(kind==='correct'?'✓':kind==='wrong'?'×':kind==='failed'?'!':'–',()=>showRecord(run,index))
+    mark.className='result-mark mark-'+kind+(run.model!==$('model').value || (run.effort || 'none')!==$('effort').value?' mark-other':'')
+    mark.title=label+' · '+metadata(run)+' · '+(attempt.preview || attempt.error || '点击查看详情')
+    mark.setAttribute('aria-label',mark.title);wrap.append(mark)
+  }
+  return wrap
+}
+function answerView(text) {
+  const el=node('div',undefined,'answer-text')
+  // Build text nodes only: model output cannot inject HTML, links, images or scripts.
+  const pattern=/(\*\*[^*\n]+\*\*|`[^`\n]+`|\\\([^\n]*?\\\)|\\\[[\s\S]*?\\\])/g
+  let last=0
+  for(const match of text.matchAll(pattern)){
+    el.append(document.createTextNode(text.slice(last,match.index)))
+    const token=match[0],tag=token.startsWith('**')?'strong':token.startsWith('`')?'code':'span'
+    const part=node(tag,undefined,tag==='span'?'math-text':undefined),body=token.slice(tag==='code'?1:2,tag==='code'?-1:-2)
+    if(tag==='span' && window.temml){try{window.temml.render(body,part,{trust:false,throwOnError:true,displayMode:token.startsWith('\\[')})}catch{part.textContent=body}}
+    else part.textContent=body
+    el.append(part)
+    last=match.index+token.length
+  }
+  el.append(document.createTextNode(text.slice(last)))
+  return el
 }
 function syncSelection() {
   const available=visibleAccounts().filter(selectable),checked=available.filter(a=>selected.has(a.id)).length
@@ -185,6 +234,8 @@ function runDetails(run) {
   const el=node('details',undefined,'run'),summary=node('summary'),body=node('div',undefined,'run-body')
   el.dataset.run=run.id;el.open=expandedRuns.has(run.id)
   summary.append(resultNode(run),node('div',metadata(run),'meta'),node('div',usageText(run),'meta'))
+  const snippet=(run.attempts || []).find(a=>a.preview || a.error)
+  if(snippet){const excerpt=answerView(snippet.error || snippet.preview);excerpt.className='answer-snippet';summary.append(excerpt)}
   el.append(summary,body)
   const load=async()=>{
     body.replaceChildren(node('p','正在加载原文…','muted'))
@@ -202,7 +253,7 @@ function runDetails(run) {
         const heading=node('div',undefined,'sample-heading');heading.append(node('span','第 '+(index+1)+' 题'),attemptBadge(attempt,full.kind),node('span',(attempt.duration_ms/1000).toFixed(1)+' 秒'));block.append(heading)
         if(attempt.request_id)block.append(node('div','请求 ID：'+attempt.request_id,'meta'))
         if(attempt.storage_note)block.append(node('p',attempt.storage_note,'muted'))
-        block.append(node('pre',attempt.error || attempt.answer || '没有保存回答原文'));body.append(block)
+        block.append(answerView(attempt.error || attempt.answer || '没有保存回答原文'));body.append(block)
       }
     }catch(e){body.replaceChildren(node('p',e.message,'error-text'),button('重新加载',load))}
   }
@@ -214,6 +265,7 @@ function runDetails(run) {
 function drawAccounts() {
   thumbnails.disconnect()
   const visible=visibleAccounts(),kind=$('kind').value,allKinds=$('history-scope').value==='all'
+  $('account-columns').hidden=kind!=='candy'
   $('accounts').replaceChildren(...visible.map(a=>{
     const accountRuns=runs.filter(r=>r.account_id===a.id),shown=accountRuns.filter(r=>allKinds || r.kind===kind),latest=accountRuns.find(r=>r.kind===kind)
     const article=node('article',undefined,'account');article.dataset.account=a.id
@@ -233,6 +285,11 @@ function drawAccounts() {
     recent.append(latest?resultNode(latest,'result recent-result'):node('div','暂无'+kindNames[kind]+'结果','result recent-result'))
     if(latest)recent.append(node('div',metadata(latest),'meta'),node('div',usageText(latest),'meta'))
     row.append(recent)
+    if(kind==='candy'){
+      const stats=rate(a.id),statsEl=node('div',undefined,'account-stats')
+      statsEl.append(node('div',stats.total?Math.round(stats.value*100)+'% · '+stats.correct+'/'+stats.total:'暂无评分','rate-value'),node('div','当前模型 / 推理强度','meta'),recentMarks(accountRuns))
+      row.append(statsEl)
+    }
     if(latest?.has_drawing)row.append(thumbnail(latest))
     const test=button('测试',()=>startAccounts([a.id]));test.classList.add('test-account');test.dataset.account=a.id;test.setAttribute('aria-label','测试 '+accountTitle(a));row.append(test);article.append(row)
     const details=node('details',undefined,'account-history'),summary=node('summary'),records=node('div',undefined,'history-grid')
@@ -245,11 +302,13 @@ function drawAccounts() {
   }))
   if(!visible.length)$('accounts').append(node('p','没有匹配的账号或历史记录','muted'))
   $('count').textContent=visible.length+' / '+allAccounts().length+' 个'
-  $('history-count').textContent='已保存 '+runs.length+' 轮 · 所有账号合计最多保留 64 轮，较早的已结束记录会被覆盖'
+  $('history-count').textContent='已保存 '+runs.length+' 轮 · 每账号每类型保留最近 20 轮；合计最多 1200 轮、16 MiB。达到轮数上限时覆盖较早的已结束记录，达到空间上限时停止写入。'
   syncSelection();paintActivity()
 }
 async function history() {
-  const body=await api('history');runs=body.runs.sort((a,b)=>b.created_at-a.created_at)
+  let cursor=0,all=[]
+  do {const body=await api('history',{cursor});all.push(...body.runs);cursor=body.next} while(cursor!=null)
+  runs=all.sort((a,b)=>b.created_at-a.created_at)
   const retained=new Set(runs.filter(r=>['completed','stopped'].includes(r.status)).map(r=>r.id))
   for(const id of runCache.keys())if(!retained.has(id))runCache.delete(id)
   drawAccounts()
@@ -289,9 +348,13 @@ $('config').onsubmit=e=>{e.preventDefault();startAccounts([...selected]).catch(e
 $('pause').onclick=()=>{paused=true;$('pause').disabled=true;$('pause').textContent=activity?.question?'正在等待本题结束…':'正在等待准备完成…';paintActivity()}
 $('all').onchange=()=>{for(const a of visibleAccounts().filter(selectable))$('all').checked?selected.add(a.id):selected.delete(a.id);drawAccounts()}
 $('key').onchange=models
-$('model').onchange=syncSelection
+$('model').onchange=()=>{syncSelection();drawAccounts()}
 $('account-search').oninput=drawAccounts
 $('history-scope').onchange=drawAccounts
+$('account-filter').onchange=drawAccounts
+$('account-sort').onchange=drawAccounts
+$('effort').onchange=drawAccounts
+$('close-record').onclick=()=>$('record-preview').close()
 $('kind').onchange=()=>{
   const kind=$('kind').value;$('runs-label').hidden=kind!=='candy';$('variant-label').hidden=kind!=='pelican';$('effort-label').hidden=kind==='fingerprint'
   $('hint').textContent=kind==='fingerprint'?'随机抽取 3 道数字挑战，概率仅比较内置参考库候选':kind==='pelican'?'点击缩略图放大查看，绘图质量由人工判断':'糖果题按回答中是否出现独立数字 21 评分，展开原文核对结论'

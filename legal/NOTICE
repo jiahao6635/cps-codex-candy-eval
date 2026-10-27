@@ -2,3 +2,4 @@ CPS Codex Candy Eval
 Adapted from haowang02/cpa-plugin-codex-candy-eval (MIT), commit 4f8367642cc1e629c4ee15a975e5e0fc53c4ac16.
 Copied prompts, Codex context/request builder, fingerprint detector and golden fixtures. CPS integration and UI are new.
 Detector: Ikaleio/lm-detector (MIT), commit 654c8334bb53951aaf04cbd61252d163649e1369. See DETECTOR-LICENSE and engine/data/lm-detector/README.md.
+Math rendering: Temml 0.13.5 (MIT), https://github.com/ronkok/Temml. See TEMML-LICENSE.
