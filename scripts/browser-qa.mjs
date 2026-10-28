@@ -39,7 +39,7 @@ await page.addInitScript(()=>{
  const make=(id,account_id,kind,extra={})=>({id,slot:Number(id.slice(1)),created_at:time-Number(id.slice(1))*60_000,account_id,account_name:'openai OAuth',kind,model:'test-model',effort:'low',variant:'original',status:'completed',jobs:[{}],attempts:[{status:'completed',correct:true,answer:'最少取出21颗（演示回答）',duration_ms:100,usage:{input_tokens:14000,output_tokens:20},request_id:'fixture-'+id}],report:{correct:1,valid:1,total:1},...extra})
  const initial=[make('r0','account-us-east','candy',{attempts:[{status:'completed',correct:true,answer:'**答案：21**，公式 \\(\\frac{1}{2}\\) <img src=x onerror=alert(1)>',duration_ms:100,usage:{input_tokens:14000,output_tokens:20}}]}),make('r1','account-us-west','candy',{attempts:[{status:'completed',correct:false,answer:'错误答案',duration_ms:100}],report:{correct:0,valid:1,total:1}}),make('r2','account-us-east','pelican',{report:{html:svg}}),make('r3','account-us-west','pelican',{report:{html:'<html><head><style>svg{background:#eff8ee}</style></head><body>'+svg+'</body></html>'}}),make('r4','account-disabled','candy'),make('r5','account-removed','candy',{account_name:'美国旧账号',account_email:'removed@example.invalid'}),make('r6','account-us-east','candy'),make('r7','account-us-east','pelican',{report:{html:'<svg><broken></svg>'}})]
  if(!localStorage.getItem('runs'))localStorage.setItem('runs',JSON.stringify(initial))
- window.fixture={calls:[],failRun:false,failBootstrap:false,holdStart:false,holdStep:false,failStep:false}
+ window.fixture={calls:[],failRun:false,failBootstrap:false,holdStart:false,holdStep:false,failStep:false,holdAllSteps:false,releaseSteps:[],activeSteps:0,maxActiveSteps:0}
  window.codexProxyPlugin={version:2,request:async q=>{
   const data=q.body?JSON.parse(q.body):null,path=q.path.slice(4)
   window.fixture.calls.push({path,data})
@@ -63,9 +63,13 @@ await page.addInitScript(()=>{
    else{const run={...data,id:crypto.randomUUID(),slot:runs.length,created_at:Date.now(),account_name:a.name,account_email:a.email,account_plan:a.plan,jobs:Array(data.kind==='fingerprint'?3:data.kind==='candy'?data.runs:1).fill({}),attempts:[],status:'ready'};runs.unshift(run);out={run}}
   }
   if(path==='step'){
+   fixture.activeSteps++;fixture.maxActiveSteps=Math.max(fixture.maxActiveSteps,fixture.activeSteps)
+   if(window.fixture.holdAllSteps)await new Promise(resolve=>window.fixture.releaseSteps.push(resolve))
    if(window.fixture.holdStep)await new Promise(resolve=>{window.fixture.releaseStep=()=>{window.fixture.holdStep=false;resolve()}})
    await new Promise(resolve=>setTimeout(resolve,150))
+   fixture.activeSteps--
    if(window.fixture.failStep){window.fixture.failStep=false;throw Error('模拟请求中断')}
+   runs=JSON.parse(localStorage.getItem('runs'))
    const run=runs.find(r=>r.id===data.id);run.attempts.push({status:'completed',answer:'答案是 21',correct:true,duration_ms:100,usage:{input_tokens:14000,output_tokens:20},request_id:'fixture-request'})
    run.status=run.attempts.length===run.jobs.length?'completed':'ready'
    if(run.status==='completed')run.report=run.kind==='candy'?{correct:run.attempts.length,valid:run.attempts.length,total:run.attempts.length}:run.kind==='fingerprint'?{attribution:{prediction_name:'参考模型',probability:.7}}:{html:svg}
@@ -149,6 +153,7 @@ try{
  await page.locator('#account-search').fill('us-');await page.locator('#all').check()
  assert.equal(await page.locator('.select-account:checked').count(),2)
  await page.locator('#account-search').fill('');assert.match(await page.locator('#selected-count').textContent(),/2/)
+ await page.locator('#concurrency').selectOption('1')
  await page.locator('#runs').fill('2');await page.evaluate(()=>{fixture.holdStep=true});await page.locator('#start').click()
  await page.waitForFunction(()=>typeof fixture.releaseStep==='function')
  assert.equal(await page.locator('#progress-spinner').isVisible(),true)
@@ -279,6 +284,65 @@ try{
  assert.equal(await page.locator('#progress-spinner').isHidden(),true)
  assert.equal(await page.locator('.account.is-running').count(),0)
  assert.equal(await page.evaluate(()=>fixture.calls.filter(c=>c.path==='step').length),0,'Refresh must not retry an uncertain request')
+ // Desktop overview remains compact and preserves a usable history toggle with 20 result marks.
+ await page.evaluate(()=>{
+  const saved=JSON.parse(localStorage.getItem('runs')),run=saved.find(r=>r.id==='r0')
+  run.attempts=Array.from({length:20},()=>({...run.attempts[0]}));run.report={correct:20,valid:20,total:20};localStorage.setItem('runs',JSON.stringify(saved))
+ })
+ await page.setViewportSize({width:1440,height:1100});await page.reload();await ready()
+ assert.equal(await account('account-us-east').locator('.result-mark').count(),20)
+ assert.ok((await account('account-us-east').locator('.account-row').boundingBox()).height<=86,'Desktop account row should be compact')
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false)
+ await page.screenshot({path:shots+'/compact-overview.png'})
+ await account('account-us-east').locator('.account-history > summary').click()
+ assert.equal(await account('account-us-east').locator('.account-history').evaluate(el=>el.open),true)
+ await page.setViewportSize({width:900,height:1000})
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false)
+ assert.equal(await account('account-us-east').locator('.result-mark').count(),20)
+ // Hold two requests concurrently, pause before the queued third account starts, then let both finish.
+ await page.reload();await ready()
+ await page.locator('#concurrency').selectOption('2');await page.locator('#runs').fill('1')
+ for(const id of ['account-us-east','account-us-west','account-pending'])await account(id).locator('.select-account').check()
+ await page.evaluate(()=>{fixture.holdAllSteps=true})
+ await page.locator('#start').click()
+ await page.waitForFunction(()=>fixture.releaseSteps.length===2)
+ assert.equal(await page.locator('.account.is-running').count(),2)
+ assert.equal(await page.evaluate(()=>fixture.calls.filter(c=>c.path==='start').length),2)
+ assert.match(await page.locator('#progress').textContent(),/并行 2 个账号/)
+ await page.locator('#pause').click()
+ await page.evaluate(()=>{fixture.holdAllSteps=false;fixture.releaseSteps.forEach(fn=>fn())})
+ await page.getByText('已暂停，可在历史记录中继续',{exact:true}).waitFor()
+ assert.equal(await page.evaluate(()=>fixture.calls.filter(c=>c.path==='start').length),2,'Pause must not start a queued account')
+ assert.equal(await page.locator('.account.is-running').count(),0)
+ assert.equal(await page.evaluate(()=>fixture.calls.filter(c=>c.path==='step').length),2)
+ await page.reload();await ready()
+ await page.locator('#concurrency').selectOption('2');await page.locator('#runs').fill('1')
+ for(const id of ['account-us-east','account-us-west','account-pending'])await account(id).locator('.select-account').check()
+ await page.locator('#start').click();await done()
+ assert.equal(await page.evaluate(()=>fixture.maxActiveSteps),2)
+ assert.equal(await page.evaluate(()=>fixture.calls.filter(c=>c.path==='step').length),3)
+ for(const id of ['account-us-east','account-us-west','account-pending'])assert.match(await account(id).locator('.recent').textContent(),/正确 1\/1/)
+ // A failed request stops the queue, but keeps the page locked until the other in-flight request settles.
+ await page.reload();await ready()
+ await page.locator('#concurrency').selectOption('2');await page.locator('#runs').fill('1')
+ for(const id of ['account-us-east','account-us-west','account-pending'])await account(id).locator('.select-account').check()
+ await page.evaluate(()=>{fixture.holdAllSteps=true})
+ await page.locator('#start').click();await page.waitForFunction(()=>fixture.releaseSteps.length===2)
+ await page.evaluate(()=>{fixture.failStep=true;fixture.releaseSteps[0]()})
+ await page.waitForFunction(()=>fixture.activeSteps===1)
+ assert.equal(await page.locator('#start').isDisabled(),true)
+ assert.equal(await page.evaluate(()=>fixture.calls.filter(c=>c.path==='start').length),2)
+ await page.evaluate(()=>{fixture.holdAllSteps=false;fixture.releaseSteps[1]()})
+ await page.getByText('执行已中止，请刷新历史核对请求状态',{exact:true}).waitFor()
+ assert.equal(await page.evaluate(()=>fixture.calls.filter(c=>c.path==='start').length),2)
+ assert.equal(await page.locator('#start').isEnabled(),true)
+ const maxBridge=await page.evaluate(async()=>{
+  let active=0,max=0
+  window.codexProxyPlugin.request=async()=>{active++;max=Math.max(active,max);await new Promise(resolve=>setTimeout(resolve,10));active--;return {status:200,contentType:'application/json',body:new TextEncoder().encode('{}').buffer}}
+  await Promise.all(Array.from({length:20},()=>api('history',{cursor:0})))
+  return max
+ })
+ assert.equal(maxBridge,7,'The plugin must leave room under CPS bridge concurrency limit')
  assert.deepEqual(errors,[])
  console.log('Browser QA passed: duplicate names, missing emails, search/selection, legacy/disabled/removed account histories, lazy retry, candy batch, pause/resume, fingerprint, SVG thumbnails/modal, strict CSP, keyboard, mobile, dark theme, running spinners, elapsed time, pause/error cleanup, restored running safety, reduced motion')
 }finally{await browser.close();server.close()}

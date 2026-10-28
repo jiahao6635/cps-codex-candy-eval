@@ -10,12 +10,13 @@ use gateway_plugin_sdk::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 // 为模型执行、评分和状态保存预留时间，保持小于管理页面桥的 180 秒期限
 pub const MANAGEMENT_TIMEOUT_MS: u64 = 170_000;
 const LEGACY_SLOTS: usize = 64;
 const SLOTS: usize = 1200;
 const GROUP_TARGET: usize = 20;
+const MAX_PARALLEL: usize = 4;
 pub(crate) fn fault(message: impl Into<String>) -> PluginFault {
     PluginFault::new(ErrorCode::InvalidInput, message)
 }
@@ -28,12 +29,16 @@ pub(crate) fn now() -> u64 {
 struct Service {
     engine: engine::Engine,
     lock: Mutex<()>,
+    slots: Vec<Mutex<()>>,
+    parallel: Semaphore,
 }
 pub fn plugin() -> Result<ComposedPlugin, Box<dyn std::error::Error>> {
     let engine = engine::Engine::bundled()?;
     Ok(build(Arc::new(Service {
         engine,
         lock: Mutex::new(()),
+        slots: (0..SLOTS).map(|_| Mutex::new(())).collect(),
+        parallel: Semaphore::new(MAX_PARALLEL),
     }))?)
 }
 fn build(service: Arc<Service>) -> Result<ComposedPlugin, AuthorError> {
@@ -322,6 +327,7 @@ async fn dispatch(s: &Service, c: &TypedCall<ManagementRequest>) -> Result<Value
                 .iter()
                 .find(|(i, _, _)| *i == slot)
                 .map(|(_, _, v)| *v);
+            let _slot_guard = s.slots[slot].lock().await;
             let r = json!({"id":format!("{}-{}",now(),slot),"slot":slot,"created_at":now(),"account_id":q.account_id,"account_name":account["name"],"account_email":account["email"],"account_plan":account["plan"],"key_id":q.key_id,"model":q.model,"kind":q.kind,"effort":q.effort,"variant":q.variant,"jobs":jobs,"attempts":[],"status":"ready","report":null,"identity":[a["authentication_kind"],a["upstream_user_id"],a["upstream_account_id"]],"credential_revision":a["credential_revision"]});
             if slot >= LEGACY_SLOTS {
                 let current = host::read_key(h, "catalog").await?;
@@ -344,8 +350,8 @@ async fn dispatch(s: &Service, c: &TypedCall<ManagementRequest>) -> Result<Value
             if q.slot >= SLOTS {
                 return Err(fault("历史槽位无效"));
             }
-            let _guard = s.lock.try_lock().map_err(|_| {
-                PluginFault::new(ErrorCode::Conflict, "另一项测试正在执行，请稍后继续")
+            let _guard = s.slots[q.slot].try_lock().map_err(|_| {
+                PluginFault::new(ErrorCode::Conflict, "此轮测试正在执行，请稍后重试")
             })?;
             let (mut r, mut version) = host::read(h, q.slot)
                 .await?
@@ -365,6 +371,9 @@ async fn dispatch(s: &Service, c: &TypedCall<ManagementRequest>) -> Result<Value
                     "测试不在可继续状态；中断的请求需停止后重新创建，以避免重复计费",
                 ));
             }
+            let _permit = s.parallel.try_acquire().map_err(|_| {
+                PluginFault::new(ErrorCode::Capacity, "并发测试已达上限，请稍后重试")
+            })?;
             let account = host::auth(
                 h,
                 "host.auth.get_runtime",

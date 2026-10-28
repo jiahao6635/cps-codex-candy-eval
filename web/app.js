@@ -1,16 +1,23 @@
 const $ = id => document.getElementById(id)
 let busy = false, paused = false, accounts = [], runs = [], modelVersion = 0, activity = null, activityTimer = null
 const selected = new Set(), expandedAccounts = new Set(), expandedRuns = new Set(), runCache = new Map()
+const activities = new Map()
+let historyQueue = Promise.resolve()
+let apiActive = 0
+const apiWaiters = []
 const kindNames = {candy:'糖果题',fingerprint:'模型指纹',pelican:'画鹈鹕'}
 const statusNames = {ready:'待继续',running:'请求未确认 / 请核对日志',completed:'已完成',stopped:'已停止'}
 async function api(path, data) {
-  const bridge = window.codexProxyPlugin
-  if (!bridge || bridge.version !== 2) throw Error('请从 CPS 插件菜单打开此页')
-  const response = await bridge.request({path:'api/'+path,method:data === undefined?'GET':'POST',...(data === undefined?{}:{contentType:'application/json',body:JSON.stringify(data)})})
-  if (!response.contentType.toLowerCase().startsWith('application/json')) throw Error('插件响应类型错误')
-  const body = JSON.parse(new TextDecoder().decode(response.body))
-  if (response.status < 200 || response.status >= 300) throw Error(body.error?.message || '请求失败 ('+response.status+')')
-  return body
+  if(apiActive>=7)await new Promise(resolve=>apiWaiters.push(resolve));else apiActive++
+  try{
+    const bridge = window.codexProxyPlugin
+    if (!bridge || bridge.version !== 2) throw Error('请从 CPS 插件菜单打开此页')
+    const response = await bridge.request({path:'api/'+path,method:data === undefined?'GET':'POST',...(data === undefined?{}:{contentType:'application/json',body:JSON.stringify(data)})})
+    if (!response.contentType.toLowerCase().startsWith('application/json')) throw Error('插件响应类型错误')
+    const body = JSON.parse(new TextDecoder().decode(response.body))
+    if (response.status < 200 || response.status >= 300) throw Error(body.error?.message || '请求失败 ('+response.status+')')
+    return body
+  }finally{const next=apiWaiters.shift();if(next)next();else apiActive--}
 }
 function node(tag,text,className) {const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(className)el.className=className;return el}
 function error(e) {$('error').textContent=e.message || String(e)}
@@ -25,18 +32,18 @@ function paintActivity() {
   if(activity){
     const question=activity.question?' · 第 '+activity.question+'/'+activity.questions+' 题':''
     const pauseNote=activity.question?'本题完成后暂停':'准备完成后暂停'
-    const message=activity.name+' · '+kindNames[activity.kind]+question+(paused?' · '+pauseNote:'')
+    const message=(activities.size>1?'并行 '+activities.size+' 个账号 · ':'')+activity.name+' · '+kindNames[activity.kind]+question+(paused?' · '+pauseNote:'')
     if($('progress').textContent!==message)$('progress').textContent=message
     $('progress-detail').textContent='账号 '+activity.accountIndex+'/'+activity.accountTotal+' · '+activity.phase+' · 已等待 '+waiting+' 秒'
   }else $('progress-detail').textContent=''
   for(const row of document.querySelectorAll('article.account')){
-    const current=activity?.accountId===row.dataset.account
+    const item=activities.get(row.dataset.account),current=!!item
     row.classList.toggle('is-running',current)
     const status=row.querySelector('.account-activity')
     status.hidden=!current
     if(current){
-      status.querySelector('.activity-label').textContent=activity.phase+(activity.question?' · 第 '+activity.question+'/'+activity.questions+' 题':'')
-      status.querySelector('.elapsed').textContent='已等待 '+waiting+' 秒'+(paused?' · '+(activity.question?'本题完成后暂停':'准备完成后暂停'):'')
+      status.querySelector('.activity-label').textContent=item.phase+(item.question?' · 第 '+item.question+'/'+item.questions+' 题':'')
+      status.querySelector('.elapsed').textContent='已等待 '+Math.floor((performance.now()-item.startedAt)/1000)+' 秒'+(paused?' · '+(item.question?'本题完成后暂停':'准备完成后暂停'):'')
     }
     const test=row.querySelector('.test-account')
     if(test.getAttribute('aria-busy')!==String(current)){
@@ -46,8 +53,11 @@ function paintActivity() {
     }
   }
 }
-function setActivity(value) {
-  activity=value?{...value,startedAt:performance.now()}:null
+function setActivity(value,accountId) {
+  if(value)activities.set(value.accountId,{...value,startedAt:performance.now()})
+  else if(accountId)activities.delete(accountId)
+  else activities.clear()
+  activity=activities.values().next().value || null
   clearInterval(activityTimer)
   activityTimer=activity?setInterval(paintActivity,1000):null
   paintActivity()
@@ -273,6 +283,7 @@ function drawAccounts() {
     box.type='checkbox';box.className='select-account';box.dataset.account=a.id;box.value=a.id;box.checked=selected.has(a.id);box.disabled=busy || !selectable(a);box.setAttribute('aria-label','选择 '+accountTitle(a)+' '+a.id)
     box.onchange=()=>{box.checked?selected.add(a.id):selected.delete(a.id);syncSelection()}
     info.append(node('strong',accountTitle(a)))
+    info.title=[a.name,a.email,'ID: '+a.id].filter(Boolean).join(' · ')
     const other=[a.name,a.email].filter(v=>v && v!==accountTitle(a))
     if(other.length)info.append(node('small',other.join(' · ')))
     info.append(node('small','ID: '+a.id,'account-id'))
@@ -283,7 +294,7 @@ function drawAccounts() {
     const current=node('div',undefined,'account-activity'),state=node('div',undefined,'activity-state')
     current.hidden=true;state.append(spinner(),node('span',undefined,'activity-label'));current.append(state,node('div',undefined,'meta elapsed'));recent.append(current)
     recent.append(latest?resultNode(latest,'result recent-result'):node('div','暂无'+kindNames[kind]+'结果','result recent-result'))
-    if(latest)recent.append(node('div',metadata(latest),'meta'),node('div',usageText(latest),'meta'))
+    if(latest){const meta=node('div',metadata(latest),'meta compact-meta');meta.title=metadata(latest);const usage=node('div',usageText(latest),'meta compact-usage');usage.title=usageText(latest);recent.append(meta,usage)}
     row.append(recent)
     if(kind==='candy'){
       const stats=rate(a.id),statsEl=node('div',undefined,'account-stats')
@@ -313,12 +324,16 @@ async function history() {
   for(const id of runCache.keys())if(!retained.has(id))runCache.delete(id)
   drawAccounts()
 }
+function queueHistory() {
+  historyQueue=historyQueue.catch(()=>{}).then(history)
+  return historyQueue
+}
 async function drive(run,accountIndex=1,accountTotal=1) {
   while(run.status==='ready' && !paused){
     setActivity({accountId:run.account_id,name:accountTitle(runAccount(run)),kind:run.kind,question:run.attempts.length+1,questions:run.jobs.length,accountIndex,accountTotal,phase:'等待模型返回'})
     run=(await api('step',{id:run.id,slot:run.slot})).run
-    activity.phase='正在刷新结果';paintActivity()
-    runCache.delete(run.id);await history()
+    const item=activities.get(run.account_id);if(item)item.phase='正在刷新结果';paintActivity()
+    runCache.delete(run.id);await queueHistory()
   }
   return run
 }
@@ -333,15 +348,25 @@ async function startAccounts(ids) {
   if(!ids.length)throw Error('请至少选择一个账号')
   if(!$('key').value || !$('model').value)throw Error('请选择 Client Key 和模型')
   const query={kind:$('kind').value,key_id:$('key').value,model:$('model').value,effort:$('effort').value,variant:$('variant').value,runs:Number($('runs').value)}
+  const concurrency=Number($('concurrency').value)
+  if(!Number.isInteger(concurrency) || concurrency<1 || concurrency>4)throw Error('账号并发数必须为 1 到 4')
   await perform(async()=>{
-    for(const [index,account_id] of ids.entries()){
-      if(paused)break
-      const a=accounts.find(a=>a.id===account_id)
-      setActivity({accountId:account_id,name:accountTitle(a),kind:query.kind,accountIndex:index+1,accountTotal:ids.length,phase:'正在准备测试'})
-      const {run}=await api('start',{...query,account_id})
-      if(paused)await history()
-      else await drive(run,index+1,ids.length)
+    let next=0,firstError=null
+    async function worker(){
+      while(!paused && next<ids.length){
+        const index=next++,account_id=ids[index],a=accounts.find(a=>a.id===account_id)
+        try{
+          if(!a || !selectable(a))throw Error('账号已停用或不存在，请刷新列表')
+          setActivity({accountId:account_id,name:accountTitle(a),kind:query.kind,accountIndex:index+1,accountTotal:ids.length,phase:'正在准备测试'})
+          const {run}=await api('start',{...query,account_id})
+          if(paused)await queueHistory()
+          else await drive(run,index+1,ids.length)
+        }catch(e){firstError ||= e;paused=true}
+        finally{setActivity(null,account_id)}
+      }
     }
+    await Promise.all(Array.from({length:Math.min(concurrency,ids.length)},()=>worker()))
+    if(firstError)throw firstError
   })
 }
 $('config').onsubmit=e=>{e.preventDefault();startAccounts([...selected]).catch(error)}

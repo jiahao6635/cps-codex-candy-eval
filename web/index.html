@@ -1,5 +1,5 @@
 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex 能力测试</title><link rel="stylesheet" href="app.css"></head><body>
-<main><header><div><p class="eyebrow">CPS / CODEX EVAL</p><h1>Codex 能力测试</h1><p>用一道题、一组指纹和一幅画，观察账号的实际表现。</p></div><span class="badge">v0.1.5</span></header>
+<main><header><div><p class="eyebrow">CPS / CODEX EVAL</p><h1>Codex 能力测试</h1><p>用一道题、一组指纹和一幅画，观察账号的实际表现。</p></div><span class="badge">v0.1.6</span></header>
 <div class="notice">测试消耗所选 Key 与账号额度。每题使用新的 Codex 上下文；结果用于比较行为，无法证明模型身份或账号降智。</div>
 <div class="layout"><section class="panel"><h2>配置测试</h2><form id="config">
 <label>测试类型<select id="kind"><option value="candy">糖果题 · 答案检查</option><option value="fingerprint">模型指纹 · 3 道挑战</option><option value="pelican">画鹈鹕 · 视觉比较</option></select></label>
@@ -7,6 +7,7 @@
 <label>模型<select id="model" required><option value="">先选择 Client Key</option></select></label>
 <label id="effort-label">推理强度<select id="effort"><option value="none">默认</option><option value="minimal">minimal</option><option value="low" selected>low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></label>
 <label id="runs-label">每账号次数<input id="runs" type="number" min="1" max="10" value="1" required></label>
+<label>账号并发<select id="concurrency"><option value="1">1（串行）</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option></select></label>
 <label id="variant-label" hidden>绘图版本<select id="variant"><option value="original">原版 · 鹈鹕骑车</option><option value="all-in-one">多合一 · 复杂场景</option></select></label>
 <p id="hint" class="muted">糖果题按回答中是否出现独立数字 21 评分，展开原文核对结论</p>
 <button id="start" type="submit">测试选中的账号</button><button id="pause" type="button" class="secondary" disabled>本题完成后暂停</button>

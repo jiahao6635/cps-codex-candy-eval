@@ -132,11 +132,15 @@ impl Harness {
             delays: BTreeMap::new(),
         }
     }
-    async fn api(&mut self, path: &str, body: Option<Value>) -> (u64, Value) {
+    async fn send_call(&mut self, path: &str, body: Option<Value>) -> u64 {
         let call_id = self.sequence;
         self.sequence += 2;
         let method = if body.is_some() { "POST" } else { "GET" };
         write_frame(&mut self.io,&Frame{message:Message::Call{id:call_id,method:"management.handle".into(),context:CallContext{call_id,instance_id:"fixture".into(),generation:1,incarnation:"fixture".into(),stage:Stage::Management,timeout_ms:self.timeout_ms,resource_stream:false,resource_scope_id:"fixture".into(),request_id:None,attempt_id:None,account_id:None,credential_revision:None,request:Some(Arc::new(RequestContext{method:method.into(),uri:format!("/api/plugins/fixture/{path}"),http_version:"HTTP/1.1".into(),headers:vec![gateway_plugin_sdk::call::middleware::MiddlewareHeader{name:"x-fixture".into(),value:vec![0xff,0x80]}],peer_addr:None,client_ip:None}))},params:json!({"method":method,"path":path,"query":"","content_type":body.as_ref().map(|_|"application/json"),"headers":[]})},payload:body.map(|v|serde_json::to_vec(&v).unwrap()).unwrap_or_default()}).await.unwrap();
+        call_id
+    }
+    async fn api(&mut self, path: &str, body: Option<Value>) -> (u64, Value) {
+        let call_id = self.send_call(path, body).await;
         loop {
             let frame =
                 tokio::time::timeout(std::time::Duration::from_secs(20), read_frame(&mut self.io))
@@ -216,8 +220,12 @@ impl Harness {
             ),
             "host.auth.get_runtime" => {
                 let q: Value = serde_json::from_slice(&body).unwrap();
-                assert_eq!(q["account_id"], "a");
-                (json!({}), serde_json::to_vec(&account()).unwrap())
+                let account = self
+                    .accounts
+                    .iter()
+                    .find(|a| a["account_id"] == q["account_id"])
+                    .unwrap();
+                (json!({}), serde_json::to_vec(account).unwrap())
             }
             "host.keys.list" => (
                 json!({"keys":[{"id":"k","name":"Test key","enabled":true}],"next_cursor":null}),
@@ -322,6 +330,118 @@ fn account() -> Value {
 }
 fn start() -> Value {
     json!({"account_id":"a","key_id":"k","model":"test-model","kind":"candy","effort":"low","variant":"original","runs":1})
+}
+#[tokio::test]
+async fn parallel_accounts_are_bounded_and_duplicate_step_is_rejected() {
+    let mut h = Harness::new(WireMode::Json).await;
+    for name in ["b", "c", "d", "e"] {
+        let mut a = account();
+        a["account_id"] = json!(name);
+        a["upstream_user_id"] = json!(format!("user-{name}"));
+        a["upstream_account_id"] = json!(format!("org-{name}"));
+        h.accounts.push(a);
+    }
+    let mut identities = Vec::new();
+    for name in ["a", "b", "c", "d", "e"] {
+        let mut request = start();
+        request["account_id"] = json!(name);
+        let (status, response) = h.api("api/start", Some(request)).await;
+        assert_eq!(status, 200);
+        identities.push(json!({"id":response["run"]["id"],"slot":response["run"]["slot"]}));
+    }
+    for id in &identities {
+        h.send_call("api/step", Some(id.clone())).await;
+    }
+    h.send_call("api/step", Some(identities[0].clone())).await;
+    let mut pending = Vec::new();
+    let mut results = BTreeMap::new();
+    let mut released = false;
+    while results.len() < 6 {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(20), read_frame(&mut h.io))
+            .await
+            .unwrap()
+            .unwrap();
+        match frame.message {
+            Message::Callback {
+                id, method, params, ..
+            } if method == "host.model.execute_stream" => {
+                pending.push((id, params["account_id"].as_str().unwrap().to_owned()));
+            }
+            Message::Callback {
+                id, method, params, ..
+            } => {
+                let (result, payload) = h.callback(&method, params, frame.payload);
+                write_frame(
+                    &mut h.io,
+                    &Frame {
+                        message: Message::Result { id, result },
+                        payload,
+                    },
+                )
+                .await
+                .unwrap();
+            }
+            Message::Suspend { .. } | Message::CallbackConsumed { .. } => {}
+            Message::Resume { id, epoch } => {
+                write_frame(&mut h.io, &Frame::control(Message::Resumed { id, epoch }))
+                    .await
+                    .unwrap()
+            }
+            Message::Result { id, result } => {
+                results.insert(
+                    id,
+                    (
+                        result["status"].as_u64().unwrap(),
+                        serde_json::from_slice::<Value>(&frame.payload).unwrap(),
+                    ),
+                );
+            }
+            _ => panic!("unexpected protocol message"),
+        }
+        if !released && pending.len() == 4 && results.len() == 2 {
+            released = true;
+            for (id, _) in &pending {
+                write_frame(
+                    &mut h.io,
+                    &Frame::control(Message::Error {
+                        id: *id,
+                        error: gateway_plugin_sdk::PluginFault::new(
+                            gateway_plugin_sdk::ErrorCode::Upstream,
+                            "fixture failure",
+                        ),
+                    }),
+                )
+                .await
+                .unwrap();
+            }
+        }
+    }
+    assert!(
+        released,
+        "four accounts must reach the model before any is released"
+    );
+    assert_eq!(
+        pending
+            .iter()
+            .map(|(_, id)| id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        4
+    );
+    assert_eq!(results.values().filter(|(s, _)| *s == 200).count(), 4);
+    assert_eq!(results.values().filter(|(s, _)| *s == 409).count(), 1);
+    assert_eq!(
+        results
+            .values()
+            .filter(|(s, b)| *s == 400 && b["error"]["code"] == "capacity")
+            .count(),
+        1
+    );
+    for (_, (status, body)) in results {
+        if status == 200 {
+            assert_eq!(body["run"]["attempts"].as_array().unwrap().len(), 1);
+        }
+    }
 }
 #[tokio::test]
 async fn pinned_account_persistence_and_failure_classification() {
